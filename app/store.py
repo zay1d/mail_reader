@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS shifts (
 """
 _NEW_COLS = {"lang": "TEXT", "category": "TEXT", "priority": "INTEGER", "auto_replied_at": "TEXT", "attachments": "TEXT", "threat_level": "INTEGER", "forwarded_to": "TEXT", "forwarded_at": "TEXT", "last_seen": "TEXT", "junk": "INTEGER",
             "reply_to": "TEXT", "client_email": "TEXT", "client_name": "TEXT", "reply_self": "INTEGER",
-            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT", "ai_summary": "TEXT"}
+            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT", "ai_summary": "TEXT",
+            "actions_done": "INTEGER", "action_tries": "INTEGER", "answer_seen_at": "TEXT"}
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -70,6 +71,8 @@ class Store:
             for c, t in _NEW_COLS.items():
                 if c not in cols:
                     self.con.execute("ALTER TABLE messages ADD COLUMN %s %s" % (c, t))
+                    if c == "actions_done":   # обновление: письма из прежних версий уже обработаны — не повторять
+                        self.con.execute("UPDATE messages SET actions_done=1")
             scols = {r[1] for r in self.con.execute("PRAGMA table_info(sessions)")}
             if "mode" not in scols:          # смены, открытые в демо-режиме, отличаем от настоящих
                 self.con.execute("ALTER TABLE sessions ADD COLUMN mode TEXT")
@@ -157,8 +160,33 @@ class Store:
         """Письма, которые пришли в «Нежелательную почту» и ещё не переехали во «Входящие»."""
         return {r["id"] for r in self._rows("SELECT id FROM messages WHERE kind='in' AND junk=1")}
 
+    def pending_actions(self, since_iso, max_tries=8):
+        """Письма в очереди, у которых автоответ/пересылка ещё не удались."""
+        return self._rows("""SELECT * FROM messages WHERE kind='in' AND ignored IS NULL AND answered_at IS NULL
+            AND no_reply_reason IS NULL AND COALESCE(actions_done,0)=0 AND COALESCE(action_tries,0)<?
+            AND received_at>=?""", (max_tries, since_iso))
+
+    def set_actions(self, mid, ok):
+        """Отметить попытку автоответа/пересылки. -> число попыток."""
+        with self.lock:
+            self.con.execute("UPDATE messages SET actions_done=?, action_tries=COALESCE(action_tries,0)+1 WHERE id=?",
+                             (1 if ok else 0, mid))
+            self.con.commit()
+            r = self.con.execute("SELECT action_tries FROM messages WHERE id=?", (mid,)).fetchone()
+            return int(r[0] or 0) if r else 0
+
     def set_ai_summary(self, mid, summary):
         self._exec("UPDATE messages SET ai_summary=? WHERE id=?", ((summary or "")[:200] or None, mid))
+
+    def touch_many(self, ms):
+        """touch_in для многих писем одной транзакцией (было: запись на диск на каждое письмо каждые 20 с)."""
+        if not ms:
+            return
+        t = now_iso()
+        with self.lock:
+            self.con.executemany("UPDATE messages SET entry_id=?, conv_id=?, last_seen=? WHERE id=?",
+                                 [(m.get("entry_id"), m.get("conv_id"), t, m["id"]) for m in ms])
+            self.con.commit()
 
     def set_junk(self, mid, junk):
         self._exec("UPDATE messages SET junk=? WHERE id=?", (1 if junk else 0, mid))
@@ -223,7 +251,10 @@ class Store:
                              ORDER BY forwarded_at DESC""", (start_iso, end_iso))
 
     def mark_answered(self, mid, answer_id, answered_at):
-        self._exec("UPDATE messages SET answered_at=?, answer_id=? WHERE id=?", (answered_at, answer_id, mid))
+        # answer_seen_at — когда программа увидела ответ: ответ, отправленный в 16:59 и попавший в «Отправленные»
+        # после закрытия смены в 17:00, засчитывается следующей смене (иначе его не было бы ни в одном отчёте)
+        self._exec("UPDATE messages SET answered_at=?, answer_id=?, answer_seen_at=? WHERE id=?",
+                   (answered_at, answer_id, now_iso(), mid))
 
     def set_client(self, m):
         """Дописать «Отвечать на» и адрес клиента письму, пришедшему до v1.30."""
@@ -295,7 +326,9 @@ class Store:
         return self._rows(sql + " ORDER BY received_at", (start_iso, end_iso))
 
     def answered_between(self, start_iso, end_iso):
-        return self._rows("""SELECT * FROM messages WHERE kind='in' AND answered_at>=? AND answered_at<?
+        return self._rows("""SELECT * FROM messages WHERE kind='in' AND answered_at IS NOT NULL
+                             AND MAX(answered_at, COALESCE(answer_seen_at, answered_at))>=?
+                             AND MAX(answered_at, COALESCE(answer_seen_at, answered_at))<?
                              ORDER BY answered_at DESC""", (start_iso, end_iso))
 
     def no_reply_between(self, start_iso, end_iso):

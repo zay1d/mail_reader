@@ -40,7 +40,8 @@ class Engine:
         self.poll_now = True
         self.boost_until = 0          # после «Ответить в Outlook» почта опрашивается каждые 3 с
         self.loop_running = False
-        self.after_clear = []         # письма, по которым сняли «возможную угрозу»: догнать автоответ и пересылку
+        self.after_clear = []
+        self.action_next = {}         # id письма -> когда снова пробовать автоответ/пересылку, если не удалось         # письма, по которым сняли «возможную угрозу»: догнать автоответ и пересылку
         self.sec_sent = {}            # id угрозы -> {"tg": bool, "mail": bool, "next": time} — повтор сигнала в СБ
         self.front_next = 0           # когда снова выводить экран тревоги поверх всех окон
         self.skip_logged = set()      # письма, о пропуске которых уже написано в журнале
@@ -306,82 +307,89 @@ class Engine:
         rescued = []
         junk_ids = self.store.junk_ids()
         ai_jobs = self._ai_start(incoming)
+        ai_deadline = time.time() + self.AI_WAIT_SECONDS
+        touched = []                  # уже известные письма: «видели сейчас» — одной записью в базу за опрос
         for m in incoming:
-            if self.store.has(m["id"]):
-                self.store.touch_in(m)
-                if m["id"] not in self.backfilled:      # письма, пришедшие до v1.30: дописать «Отвечать на» и адрес клиента
-                    self.backfilled.add(m["id"])
-                    rec = self.store.get(m["id"])
-                    if rec and not rec.get("reply_to") and m.get("reply_to"):
-                        self._client_info(m)
-                        self.store.set_client(m)
-                if m["id"] in junk_ids and not m.get("junk"):
-                    self.store.set_junk(m["id"], False)       # сотрудник нажал «Не нежелательное»
-                    rescued.append(m)
-                    self._log("Письмо «%s» перенесено из «Нежелательной почты» во «Входящие» — автоответ и пересылка"
-                              % (m.get("subject") or ""))
-                continue
-            ign = matcher.is_ignored(m.get("sender"), m.get("sender_name"), m.get("subject"), self.cfg)
-            if not ign and m.get("bulk"):
-                ign = ("рассылка: " + m["bulk"]) if isinstance(m.get("bulk"), str) else "рассылка (заголовки письма)"
-            self._client_info(m)
-            if m["reply_self"] and not ign:
-                self._log("Заявка с сайта «%s»: «Отвечать на» — наш ящик; %s" % (
-                    m.get("subject"), ("адрес клиента из текста: " + m["client_email"]) if m["client_email"]
-                    else "адреса клиента в тексте нет — ответить можно только по телефону/вручную"))
-            cls = m.get("item_class") or 43
-            if not ign and cls != 43:               # приглашение на встречу, отчёт о недоставке — в «Не попали в очередь»
-                from mail_outlook import OTHER_CLASSES
-                ign = OTHER_CLASSES.get(cls, "служебный элемент Outlook (тип %s)" % cls)
-            text = (m.get("subject") or "") + "\n" + (m.get("body") or "")
-            # отчёт о недоставке цитирует наше же письмо (в т.ч. сигнал угрозы в СБ) — тревогу по нему не поднимаем
-            level, found = self.detector.analyze(text) if cls != 46 else (0, [])
-            if m.get("junk"):
-                # «Нежелательная почта»: письмо в очереди с пометкой (клиентские письма с Gmail часто попадают туда);
-                # явная угроза — тревога; «возможная угроза» из спама жёлтый экран не поднимает (там много «last warning»)
-                if level == 2:
-                    ign = ""
-                elif level == 1:
+            try:   # одно «битое» письмо не должно останавливать разбор остальных (и их автоответ/пересылку)
+                if self.store.has(m["id"]):
+                    touched.append(m)
+                    if m["id"] not in self.backfilled:      # письма, пришедшие до v1.30: дописать «Отвечать на» и адрес клиента
+                        self.backfilled.add(m["id"])
+                        rec = self.store.get(m["id"])
+                        if rec and not rec.get("reply_to") and m.get("reply_to"):
+                            self._client_info(m)
+                            self.store.set_client(m)
+                    if m["id"] in junk_ids and not m.get("junk"):
+                        self.store.set_junk(m["id"], False)       # сотрудник нажал «Не нежелательное»
+                        rescued.append(m)
+                        self._log("Письмо «%s» перенесено из «Нежелательной почты» во «Входящие» — автоответ и пересылка"
+                                  % (m.get("subject") or ""))
+                    continue
+                ign = matcher.is_ignored(m.get("sender"), m.get("sender_name"), m.get("subject"), self.cfg)
+                if not ign and m.get("bulk"):
+                    ign = ("рассылка: " + m["bulk"]) if isinstance(m.get("bulk"), str) else "рассылка (заголовки письма)"
+                self._client_info(m)
+                if m["reply_self"] and not ign:
+                    self._log("Заявка с сайта «%s»: «Отвечать на» — наш ящик; %s" % (
+                        m.get("subject"), ("адрес клиента из текста: " + m["client_email"]) if m["client_email"]
+                        else "адреса клиента в тексте нет — ответить можно только по телефону/вручную"))
+                cls = m.get("item_class") or 43
+                if not ign and cls != 43:               # приглашение на встречу, отчёт о недоставке — в «Не попали в очередь»
+                    from mail_outlook import OTHER_CLASSES
+                    ign = OTHER_CLASSES.get(cls, "служебный элемент Outlook (тип %s)" % cls)
+                text = (m.get("subject") or "") + "\n" + (m.get("body") or "")
+                # отчёт о недоставке цитирует наше же письмо (в т.ч. сигнал угрозы в СБ) — тревогу по нему не поднимаем
+                level, found = self.detector.analyze(text) if cls != 46 else (0, [])
+                if m.get("junk"):
+                    # «Нежелательная почта»: письмо в очереди с пометкой (клиентские письма с Gmail часто попадают туда);
+                    # явная угроза — тревога; «возможная угроза» из спама жёлтый экран не поднимает (там много «last warning»)
+                    if level == 2:
+                        ign = ""
+                    elif level == 1:
+                        level, found = 0, []
+                if level and (ign == "своё письмо" or SB_MARKS[0].lower() in (m.get("subject") or "").lower()):
+                    # наш же сигнал в СБ вернулся (автоответ «нет на месте», группа СБ с contact@, недоставка) или письмо
+                    # самого ящика — тревогу НЕ поднимаем, иначе каждый сигнал порождал бы новый (петля)
+                    if level == 2:
+                        self._log("Письмо «%s» — возврат нашего сигнала в СБ или своё письмо, тревога не поднимается" % (m.get("subject") or ""))
                     level, found = 0, []
-            if level and (ign == "своё письмо" or SB_MARKS[0].lower() in (m.get("subject") or "").lower()):
-                # наш же сигнал в СБ вернулся (автоответ «нет на месте», группа СБ с contact@, недоставка) или письмо
-                # самого ящика — тревогу НЕ поднимаем, иначе каждый сигнал порождал бы новый (петля)
-                if level == 2:
-                    self._log("Письмо «%s» — возврат нашего сигнала в СБ или своё письмо, тревога не поднимается" % (m.get("subject") or ""))
-                level, found = 0, []
-            if level == 2 and ign:
-                self._log("Явная угроза от отправителя из списка «не считать входящими» (%s) — тревога всё равно" % ign)
-                ign = ""
-            if level == 1 and ign:
-                level, found = 0, []    # «возможная угроза» в рассылке: экрана нет — и в отчёте её быть не должно
-            air = self._ai_result(ai_jobs.get(m["id"])) if not ign else None
-            if air and air["threat"] and not level:
-                # ИИ увидел угрозу, которую не поймали ключевые слова: жёлтый экран, решает сотрудник (красный — только по словам)
-                level, found = 1, ["ИИ: " + (air["threat_reason"] or "возможная угроза")]
-            lang = (air and air["lang"]) or classify.detect_lang(m.get("body") or "", m.get("subject") or "")   # язык самого человека, не подписи/цитаты
-            cat = classify.categorize(m.get("subject"), m.get("body"), self.cfg.get("categories"), level == 2)
-            if air and air["category"] and level != 2:
-                cat = air["category"]
-            pri = 1 if level else classify.prioritize(m.get("subject"), m.get("body"), m.get("sender"),
-                                                      bool(m.get("importance_high")), self.cfg.get("priority") or {}, cat)
-            if air and not level:
-                pri = ai.merge_priority(air["priority"], pri, bool(m.get("importance_high")), m.get("sender"),
-                                        self.cfg.get("priority") or {}, cat)
-            rd = _p(m.get("received_at")) or datetime.now()
-            key = shifts.shift_key_for(rd, self.cfg)
-            if self.store.upsert_in(m, ign, found, key, lang, cat, pri, level):
-                if air:
-                    self.store.set_ai_summary(m["id"], air["summary"])
-                    self._log("ИИ: «%s» → %s, %s, %s%s" % (m.get("subject"), self.cat_name(cat),
-                              ((self.cfg.get("priority") or {}).get("names") or {}).get(str(pri), pri), lang,
-                              (" | " + air["summary"]) if air["summary"] else ""))
-                if not ign:
-                    new_letters.append(m)
-                elif not self.first_poll:
-                    self._log("Письмо «%s» от %s не показывается: %s" % (m.get("subject"), m.get("sender"), ign))
-                if level:
-                    self._log("%s: %s | %s | %s" % ("УГРОЗА" if level == 2 else "ВОЗМОЖНАЯ УГРОЗА",
-                                                    m.get("sender"), m.get("subject"), ", ".join(found)))
+                if level == 2 and ign:
+                    self._log("Явная угроза от отправителя из списка «не считать входящими» (%s) — тревога всё равно" % ign)
+                    ign = ""
+                if level == 1 and ign:
+                    level, found = 0, []    # «возможная угроза» в рассылке: экрана нет — и в отчёте её быть не должно
+                # явная угроза — без ожидания ИИ: тревога не должна ждать ответа внешнего сервиса
+                air = self._ai_result(ai_jobs.get(m["id"]), ai_deadline) if not ign and level != 2 else None
+                if air and air["threat"] and not level:
+                    # ИИ увидел угрозу, которую не поймали ключевые слова: жёлтый экран, решает сотрудник (красный — только по словам)
+                    level, found = 1, ["ИИ: " + (air["threat_reason"] or "возможная угроза")]
+                lang = (air and air["lang"]) or classify.detect_lang(m.get("body") or "", m.get("subject") or "")   # язык самого человека, не подписи/цитаты
+                cat = classify.categorize(m.get("subject"), m.get("body"), self.cfg.get("categories"), level == 2)
+                if air and air["category"] and level != 2:
+                    cat = air["category"]
+                pri = 1 if level else classify.prioritize(m.get("subject"), m.get("body"), m.get("sender"),
+                                                          bool(m.get("importance_high")), self.cfg.get("priority") or {}, cat)
+                if air and not level:
+                    pri = ai.merge_priority(air["priority"], pri, bool(m.get("importance_high")), m.get("sender"),
+                                            self.cfg.get("priority") or {}, cat)
+                rd = _p(m.get("received_at")) or datetime.now()
+                key = shifts.shift_key_for(rd, self.cfg)
+                if self.store.upsert_in(m, ign, found, key, lang, cat, pri, level):
+                    if air:
+                        self.store.set_ai_summary(m["id"], air["summary"])
+                        self._log("ИИ: «%s» → %s, %s, %s%s" % (m.get("subject"), self.cat_name(cat),
+                                  ((self.cfg.get("priority") or {}).get("names") or {}).get(str(pri), pri), lang,
+                                  (" | " + air["summary"]) if air["summary"] else ""))
+                    if not ign:
+                        new_letters.append(m)
+                    elif not self.first_poll:
+                        self._log("Письмо «%s» от %s не показывается: %s" % (m.get("subject"), m.get("sender"), ign))
+                    if level:
+                        self._log("%s: %s | %s | %s" % ("УГРОЗА" if level == 2 else "ВОЗМОЖНАЯ УГРОЗА",
+                                                        m.get("sender"), m.get("subject"), ", ".join(found)))
+            except Exception:
+                self._log("Ошибка разбора письма «%s» от %s: %s" % (m.get("subject"), m.get("sender"), traceback.format_exc()[-300:]))
+        self.store.touch_many(touched)
         if not self.self_fix_done:
             self.self_fix_done = True
             try:
@@ -417,6 +425,7 @@ class Engine:
                 if ids:
                     cands = [c for c in cands if c["id"] not in ids]
                     self._log("Ответ: %s -> %s" % (subj, ", ".join(ids)))
+        self._match_late(new_letters, own)
         if new_letters and not self.first_poll:
             n = len(new_letters)
             if n == 1:
@@ -437,13 +446,55 @@ class Engine:
             if rec and (_p(rec.get("received_at")) or datetime.now()) >= backlog:
                 fresh.append(rec)
         fresh += rescued               # из «Нежелательной» во «Входящие» — обрабатываются при любом возрасте
-        for m in fresh:                # сначала направление и пересылка в отдел, затем автоответ (уходит всем)
-            self._auto_forward(m)
-            self._auto_reply(m)
+        # + письма, у которых автоответ или пересылка не удались раньше (Outlook был занят, окно-вопрос, нет сети):
+        # повтор с паузой 1, 2, 4… мин, до 8 попыток, пока письмо не старше «auto_reply_backlog_hours»
+        work = {m["id"]: m for m in fresh}
+        for r in self.store.pending_actions(_iso(backlog)):
+            if time.time() >= self.action_next.get(r["id"], 0):
+                work.setdefault(r["id"], r)
+        for mid, m in work.items():    # сначала направление и пересылка в отдел, затем автоответ (уходит всем)
+            rec = self.store.get(mid)
+            if not rec or self._threat_blocks(rec):
+                continue               # угроза: ни автоответа, ни пересылки; «Угрозы нет» вернёт письмо сюда
+            try:
+                ok_f = self._auto_forward(m)
+                ok_r = self._auto_reply(m)
+                ok = ok_f and ok_r
+            except Exception as e:
+                ok = False
+                self._log("Автоответ/пересылка: ошибка " + str(e)[:200])
+            tries = self.store.set_actions(mid, ok)
+            if ok:
+                self.action_next.pop(mid, None)
+            else:
+                self.action_next[mid] = time.time() + 60 * min(30, 2 ** max(0, tries - 1))
         self._mark_vanished(since)
         self.first_poll = False
         self.last_poll = datetime.now()
         self.status = src.status()
+
+    def _match_late(self, new_letters, own):
+        """Ответ мог попасть в «Отправленные» раньше, чем программа прочитала само письмо (сбой чтения, письмо
+        поставили в очередь вручную). Такой ответ уже записан в базу и сам письмо не закроет — без этого письму
+        ушёл бы автоответ после ответа сотрудника, а карточка висела бы в очереди вечно."""
+        if not new_letters:
+            return
+        ids = {m["id"] for m in new_letters}
+        cands = [c for c in self.store.unanswered_candidates() if c["id"] in ids]
+        if not cands:
+            return
+        lo = min(c.get("received_at") or "" for c in cands)
+        for o in self.store.outgoing_between(lo, _iso(datetime.now() + timedelta(days=1))):
+            if matcher.is_forward(o.get("subject") or ""):
+                continue
+            got = matcher.match_reply_all(dict(o, sent_at=o.get("received_at")), cands, own)
+            for mid in got:
+                self.store.mark_answered(mid, o["id"], o.get("received_at"))
+            if got:
+                cands = [c for c in cands if c["id"] not in got]
+                self._log("Ответ найден в «Отправленных» раньше письма: %s -> %s" % (o.get("subject"), ", ".join(got)))
+            if not cands:
+                break
 
     AI_MAX_PER_POLL = 40      # защита от расходов: больше писем за один опрос — остальные по ключевым словам
 
@@ -467,12 +518,14 @@ class Engine:
                 jobs[m["id"]] = f
         return jobs
 
+    AI_WAIT_SECONDS = 25      # сколько опрос ждёт ИИ: не успел — письмо по ключевым словам, тревоги и экран не ждут
+
     @staticmethod
-    def _ai_result(f):
+    def _ai_result(f, deadline):
         if f is None:
             return None
         try:
-            return f.result(timeout=120)
+            return f.result(timeout=max(0.0, deadline - time.time()))
         except Exception:
             return None
 
@@ -519,48 +572,55 @@ class Engine:
 
     def _auto_reply(self, m):
         if not self.cfg.get("auto_reply_enabled"):
-            return
+            return True
         rec = self.store.get(m["id"])
         if not rec or rec.get("ignored") or self._threat_blocks(rec) or rec.get("auto_replied_at") or rec.get("answered_at"):
-            return
+            return True
         if rec.get("junk"):
             self._log("Автоответ не отправлен (письмо в «Нежелательной почте»; если оно настоящее — в Outlook «Не нежелательное»): %s"
                       % (rec.get("subject") or ""))
-            return
+            return True
         if rec.get("reply_self") and not rec.get("client_email"):
             self._log("Автоответ не отправлен: заявка с сайта «%s» — «Ответить» ушло бы на наш ящик, адреса клиента в тексте нет"
                       % (rec.get("subject") or ""))
-            return
+            return True
         # кому отвечаем: адрес клиента (заявка с сайта, Reply-To) или отправитель
         sender = (rec.get("client_email") or rec.get("sender") or "").lower()
         if not sender or "@" not in sender:
-            return
+            return True
         own = self._own()
         if sender in own or (rec.get("sender") or "").lower() in own:
-            return  # не отвечаем самому ящику ресепшн
+            return True  # не отвечаем самому ящику ресепшн
         # коллеги своего домена (ответ отдела «всем» с contact@ в копии) автоответ не получают — решение Олега 18.09
         own_domains = {a.split("@", 1)[1] for a in own}
         if self.cfg.get("auto_reply_skip_own_domain", True) and any(
                 "@" in a and a.split("@", 1)[1] in own_domains for a in (sender, (rec.get("sender") or "").lower())):
             self._log("Автоответ не отправлен (%s — свой домен): %s" % (sender, rec.get("subject")))
-            return
+            return True
         # правило Олега (17.09): автоответ на КАЖДОЕ письмо; исключение — та же тема от того же
         # отправителя (продолжение переписки): автоответ по теме уходит один раз
         key = self._thread_key(rec.get("subject"))
         prev = self.store.auto_replied_to(sender)
         if any(self._thread_key(p.get("subject")) == key for p in prev):
             self._log("Автоответ не отправлен (по теме «%s» %s уже получал автоответ)" % (rec.get("subject"), sender))
-            return
-        # защита от переписки двух автоответчиков: не больше 5 автоответов одному адресу в час
+            return True
+        # защита от переписки двух автоответчиков: наш автоответ в теме («[Ticket #1] Re: Ваше обращение получено: …»)
+        # — это ответ чужого автоответчика или тикет-системы; не больше 5 автоответов одному адресу в час и 10 в сутки
+        subj_l = (rec.get("subject") or "").lower()
+        if any(p.lower() in subj_l for p in self._auto_prefixes()):
+            self._log("Автоответ не отправлен (в теме наш автоответ — ответ автоответчика или тикет-системы): %s" % rec.get("subject"))
+            return True
         hour_ago = _iso(datetime.now() - timedelta(hours=1))
-        if sum(1 for p in prev if (p.get("auto_replied_at") or "") >= hour_ago) >= 5:
-            self._log("Автоответ не отправлен (%s: больше 5 автоответов за час — похоже на автоответчик)" % sender)
-            return
+        day_ago = _iso(datetime.now() - timedelta(days=1))
+        if (sum(1 for p in prev if (p.get("auto_replied_at") or "") >= hour_ago) >= 5
+                or sum(1 for p in prev if (p.get("auto_replied_at") or "") >= day_ago) >= 10):
+            self._log("Автоответ не отправлен (%s: слишком много автоответов за час/сутки — похоже на автоответчик)" % sender)
+            return True
         lang = rec.get("lang") or "ru"
         tpls = (self.cfg.get("auto_reply_templates") or {}).get(rec.get("category") or "general") or {}
         tpl = tpls.get(lang) or tpls.get("ru") or ((self.cfg.get("auto_reply_templates") or {}).get("general") or {}).get(lang) or ""
         if not tpl.strip():
-            return
+            return True
         phone = (self.cfg.get("reception_phone") or "").strip()
         if not phone:
             tpl = "\n".join(line for line in tpl.split("\n") if "{phone}" not in line)
@@ -576,8 +636,10 @@ class Engine:
                 self.source.send_reply(rec, subject, text)
             self.store.set_auto_replied(rec["id"])
             self._log("Автоответ (%s/%s): %s" % (rec.get("category"), lang, sender))
+            return True
         except Exception as e:
-            self._log("Автоответ не отправлен: " + str(e)[:200])
+            self._log("Автоответ не отправлен (повтор позже): " + str(e)[:200])
+            return False
 
     def forward_addr(self, category):
         for c in self.cfg.get("categories") or []:
@@ -588,16 +650,16 @@ class Engine:
     def _auto_forward(self, m):
         rec = self.store.get(m["id"])
         if not rec or rec.get("ignored") or self._threat_blocks(rec) or rec.get("forwarded_at") or rec.get("answered_at") or rec.get("junk"):
-            return
+            return True
         own = {x.strip().lower() for x in (self.cfg.get("own_addresses") or []) if "@" in (x or "")}
         sender = (rec.get("sender") or "").lower()
         if self.cfg.get("auto_reply_skip_own_domain", True) and "@" in sender and sender.split("@", 1)[1] in {x.split("@", 1)[1] for x in own}:
             self._log("Пересылка не выполнена (%s — свой домен, письмо остаётся на ресепшн): %s" % (sender, rec.get("subject")))
-            return   # ответ отдела «всем» не гоняем обратно в отдел
+            return True   # ответ отдела «всем» не гоняем обратно в отдел
         to = self.forward_addr(rec.get("category"))
         if not to:
             self._log("Письмо «%s» — направление «%s», пересылка для него не настроена" % (rec.get("subject"), self.cat_name(rec.get("category"))))
-            return
+            return True
         note = classify.render_template(self.cfg.get("forward_note") or "", category=self.cat_name(rec.get("category")),
                                         phone=self.cfg.get("reception_phone") or "")
         if rec.get("client_email"):        # заявка с сайта: «Ответить» в отделе ушло бы на ящик ресепшн
@@ -608,8 +670,10 @@ class Engine:
             self.source.forward(rec, to, note)
             self.store.mark_forwarded(rec["id"], to)
             self._log("Переслано в отдел (%s): %s -> %s" % (rec.get("category"), rec.get("subject"), to))
+            return True
         except Exception as e:
-            self._log("Пересылка не удалась: " + str(e)[:200])
+            self._log("Пересылка не удалась (повтор позже): " + str(e)[:200])
+            return False
 
     def _daily_backup(self):
         """Раз в день копия базы и config.json в data/backup (защита от порчи и случайного удаления)."""
@@ -1015,6 +1079,9 @@ class Engine:
         """«Нужен ответ» в списке «Не попали в очередь»: письмо встаёт в очередь (автоответ и пересылка не уходят)."""
         rec = self.store.get(mid)
         ok = self.store.unignore(mid)
+        if ok:
+            self.store.set_actions(mid, True)     # вручную в очередь: без автоответа и пересылки
+            self._match_late([{"id": mid}], self._own())
         if ok and rec:
             self._log("Письмо «%s» (%s) поставлено в очередь вручную (было: %s)" % (rec.get("subject"), rec.get("sender"), rec.get("ignored")))
         return ok

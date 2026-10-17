@@ -30,13 +30,27 @@ def handler(req):
         "stop_reason": "end_turn", "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}})
 ai.AiClassifier._get_client = lambda self: anthropic.Anthropic(api_key="x", max_retries=0,
     http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+import mail_demo
+fail = {"on": mode == "retry"}
+for name in ("send_reply", "forward"):
+    orig = getattr(mail_demo.DemoSource, name)
+    def wrap(self, *a, _o=orig, **k):
+        if fail["on"]:
+            raise RuntimeError("Outlook занят")
+        return _o(self, *a, **k)
+    setattr(mail_demo.DemoSource, name, wrap)
 from core import Engine
 with contextlib.redirect_stdout(io.StringIO()):
     e = Engine(base); e.poll(); e.poll()
-rows = e.store._rows("SELECT subject, category, priority, ai_summary, ignored FROM messages WHERE kind='in'")
+    if mode == "retry":
+        before = len(e.store._rows("SELECT 1 FROM messages WHERE auto_replied_at IS NOT NULL"))
+        fail["on"] = False
+        e.action_next.clear()          # не ждать паузу между попытками
+        e.poll()
+rows = e.store._rows("SELECT subject, category, priority, ai_summary, ignored, auto_replied_at, forwarded_to FROM messages WHERE kind='in'")
 st = e.state()
 print(json.dumps({"calls": len(calls), "req": calls[0] if calls else None, "rows": rows, "ai": st["ai"],
-                  "queue": len(st["queue"])}, ensure_ascii=False, default=str))
+                  "queue": len(st["queue"]), "before": locals().get("before")}, ensure_ascii=False, default=str))
 ''')
 
 def run(mode):
@@ -46,6 +60,7 @@ def run(mode):
             shutil.copytree(os.path.join(ROOT, p), os.path.join(tmp, p))
         shutil.copy(os.path.join(ROOT, "config.json"), tmp)
         os.makedirs(os.path.join(tmp, "data"))
+        os.makedirs(os.path.join(tmp, "reports"))
         script = os.path.join(tmp, "_child.py")
         open(script, "w", encoding="utf-8").write(CHILD)
         r = subprocess.run([sys.executable, script, tmp, mode], capture_output=True, text=True, encoding="utf-8")
@@ -85,6 +100,15 @@ check(on["ai"]["enabled"] and on["ai"]["classified"] == n_new, "статус И�
 fail = run("fail")
 check([r["category"] for r in fail["rows"]] == [r["category"] for r in off["rows"]], "ИИ с ошибкой — сортировка по ключевым словам как без ИИ")
 check("ключ" in (fail["ai"]["error"] or ""), "ошибка ИИ видна в статусе: " + (fail["ai"]["error"] or ""))
+
+rt = run("retry")
+# с повтором сравниваем прогон «on» (ИИ-заглушка включена в обоих)
+n_on = sum(1 for r in on["rows"] if r["auto_replied_at"])
+check(rt["before"] == 0, "Outlook занят: автоответы не ушли")
+check(sum(1 for r in rt["rows"] if r["auto_replied_at"]) == n_on and n_on > 0,
+      "после повтора автоответы ушли всем (%d)" % n_on)
+check([r["forwarded_to"] for r in rt["rows"]] == [r["forwarded_to"] for r in on["rows"]]
+      and any(r["forwarded_to"] for r in rt["rows"]), "после повтора пересылка в отдел выполнена")
 
 # детектор угроз: настоящие угрозы ловятся, безобидные обороты — нет
 sys.path.insert(0, os.path.join(ROOT, "app"))

@@ -131,7 +131,7 @@ class AiClassifier:
         with self._lock:
             if self._client is None:
                 import anthropic
-                self._client = anthropic.Anthropic(api_key=self.key, timeout=40.0, max_retries=2)
+                self._client = anthropic.Anthropic(api_key=self.key, timeout=20.0, max_retries=1)
             return self._client
 
     def _fail(self, msg):

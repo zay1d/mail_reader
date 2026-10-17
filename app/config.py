@@ -133,24 +133,55 @@ def load():
     with _lock:
         cfg = copy.deepcopy(DEFAULTS)
         if os.path.exists(CONFIG_PATH):
-            try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                    user = json.load(f)
+            user = None
+            for attempt in range(5):
+                try:
+                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                        user = json.load(f)
+                    break
+                except (ValueError, UnicodeDecodeError) as e:     # файл испорчен (обрыв записи)
+                    user = _restore_backup(cfg, e)
+                    break
+                except OSError:            # файл занят антивирусом/OneDrive — подождать, это не порча
+                    import time
+                    time.sleep(1)
+            if user is None and not cfg.get("_config_error"):
+                cfg["_config_error"] = "config.json не прочитан (занят другой программой) — работают настройки по умолчанию"
+            if isinstance(user, dict):
                 for k, v in user.items():
                     cfg[k] = v
                 _merge_defaults(cfg)
-            except Exception as e:
-                try:
-                    print("config.json не прочитан:", e)
-                except Exception:
-                    pass
-                try:                       # битый файл откладываем, чтобы было видно, что настройки слетели
-                    os.replace(CONFIG_PATH, CONFIG_PATH + ".broken")
-                    cfg["_config_error"] = "config.json повреждён и переименован в config.json.broken: %s" % str(e)[:120]
-                except Exception:
-                    pass
+        if _cfg is not None:               # тот же объект: Engine и OutlookSource держат ссылку на него
+            _cfg.clear()
+            _cfg.update(cfg)
+            return _cfg
         _cfg = cfg
         return cfg
+
+def _restore_backup(cfg, err):
+    """config.json испорчен: отложить его в .broken и взять последнюю ежедневную копию из data/backup
+    (иначе программа ушла бы в демо-режим без контроля почты и угроз)."""
+    try:
+        os.replace(CONFIG_PATH, CONFIG_PATH + ".broken")
+    except Exception:
+        pass
+    import glob
+    for p in sorted(glob.glob(os.path.join(BASE, "data", "backup", "config-*.json")), reverse=True):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                user = json.load(f)
+            cfg["_config_error"] = ("config.json был повреждён (%s) — восстановлены настройки из копии %s"
+                                    % (str(err)[:80], os.path.basename(p)))
+            try:
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(user, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            return user
+        except Exception:
+            continue
+    cfg["_config_error"] = "config.json повреждён и переименован в config.json.broken: %s" % str(err)[:120]
+    return None
 
 _REMOVED_WORDS = {'rent': ['коммерческ', 'промо-акци', 'свободн площад', 'площадк', 'площадь', 'площад', 'вакантн', 'vacant'], 'hr': ['hr'], 'marketing': ['маркетингу', 'событи', 'праздник', 'декор', 'афиш', 'сотрудничеств', 'партнерств', 'партнёрств', 'hamkorlik', 'ҳамкорлик', 'хамкорлик', 'partnership', 'collaboration', 'activation', 'шоу']}   # слова прежних версий, дававшие ложные срабатывания
 
@@ -208,7 +239,8 @@ def get():
 def save(new_values: dict):
     global _cfg
     with _lock:
-        cfg = _cfg or copy.deepcopy(DEFAULTS)
+        # изменения — в копию; в памяти они появятся только после успешной записи на диск
+        cfg = copy.deepcopy(_cfg if _cfg is not None else DEFAULTS)
         for k, v in new_values.items():
             if k in DEFAULTS:
                 cfg[k] = v
@@ -238,8 +270,12 @@ def save(new_values: dict):
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, CONFIG_PATH)
-        _cfg = cfg
-        return cfg
+        if _cfg is None:
+            _cfg = cfg
+        else:                              # тот же объект: Engine и OutlookSource держат ссылку на него
+            _cfg.clear()
+            _cfg.update(cfg)
+        return _cfg
 
 def public():
     """Настройки для интерфейса. Ключ API ИИ не отдаётся — только признак, что он сохранён."""
