@@ -1,0 +1,68 @@
+# Сборка ReceptionMail.exe и архивов установки/обновления на Windows.
+# Готовые архивы: вкладка Actions → последний запуск → раздел Artifacts.
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install anthropic==1.15.0
+      - name: Проверка кода (демо-режим, без Outlook)
+        run: python tests/run_tests.py
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Зависимости
+        run: pip install -r build_tools/requirements.txt
+      - name: Версия
+        id: ver
+        shell: bash
+        run: echo "v=$(grep -oP '^VERSION = "\K[^"]+' app/core.py)" >> "$GITHUB_OUTPUT"
+      - name: Сборка exe
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed --name ReceptionMail
+          --paths app
+          --hidden-import mail_outlook --hidden-import mail_demo --hidden-import ai
+          --hidden-import win32com.client --hidden-import pythoncom --hidden-import pywintypes
+          --collect-submodules anthropic
+          app/main.py
+      - name: Архивы установки и обновления
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.v }}"
+          $common = @("app", "ui", "sounds", "reports", "INSTRUKCIYA.md")
+          # установка: всё, включая config.json и пустую папку data
+          New-Item -ItemType Directory -Force out/install, out/update | Out-Null
+          Copy-Item dist/ReceptionMail.exe out/install/
+          foreach ($p in $common + @("config.json", "data")) { Copy-Item -Recurse $p out/install/ }
+          Copy-Item docs/*.pdf out/install/
+          Get-ChildItem -Recurse out/install -Include __pycache__ | Remove-Item -Recurse -Force
+          # обновление: без config.json и data — настройки и история писем сохраняются
+          Copy-Item dist/ReceptionMail.exe out/update/
+          foreach ($p in $common) { Copy-Item -Recurse $p out/update/ }
+          Copy-Item docs/*.pdf out/update/
+          Get-ChildItem -Recurse out/update -Include __pycache__ | Remove-Item -Recurse -Force
+          Compress-Archive -Path out/install/* -DestinationPath "reception-mail_install_v$v.zip"
+          Compress-Archive -Path out/update/* -DestinationPath "reception-mail_update_v$v.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reception-mail_v${{ steps.ver.outputs.v }}
+          path: |
+            reception-mail_install_v*.zip
+            reception-mail_update_v*.zip
+          retention-days: 90

@@ -64,7 +64,7 @@
     var items = state.queue.filter(function (m) { return !catFilter || (m.category || 'general') === catFilter; });
     $('empty').hidden = items.length > 0;
     $('empty-t').textContent = catFilter && c.queue ? 'В этом направлении всё отвечено' : '✓ Все письма отвечены';
-    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : ''); }).join(';');
+    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : '') + '|' + (m.ai_summary || ''); }).join(';');
     if (q.dataset.sig !== sig) {
       q.dataset.sig = sig; q.innerHTML = '';
       items.forEach(function (m) {
@@ -79,6 +79,7 @@
           (m.thread_count > 1 ? '<span class="tag thr">переписка: ' + m.thread_count + ' письма</span>' : '') +
           (m.junk ? '<span class="tag orange">из «Нежелательной почты» — проверьте: настоящее → в Outlook «Не нежелательное», спам → удалить</span>' : '') + (m.night ? '<span class="tag">ночное · срок с ' + ft(m.sla_from) + '</span>' : '') + (m.carried ? '<span class="tag">с прошлой смены</span>' : '') + (m.threat_words && m.threat_words.length ? ((m.threat_level || 2) === 2 ? '<span class="tag red">угроза</span>' : '<span class="tag orange">' + (m.threat_ack_at ? 'проверено, угрозы нет' : 'проверить') + '</span>') : '') + '</div>' +
           '<div class="subj">' + esc(m.subject || '(без темы)') + '</div>' +
+          (m.ai_summary ? '<div class="ai-sum" title="Кратко — определено ИИ">' + esc(m.ai_summary) + '</div>' : '') +
           '<div class="prev">' + esc(m.body_preview || '') + '</div>' +
           (att ? '<div class="atts">' + att + '</div>' : '') + clientNote(m) +
           '<div class="meta">Получено ' + fdt(m.received_at) + (m.auto_replied_at ? ' · <span class="auto">автоответ отправлен ' + ft(m.auto_replied_at) + '</span>' : '') + '</div></div>' +

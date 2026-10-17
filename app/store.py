@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS shifts (
 """
 _NEW_COLS = {"lang": "TEXT", "category": "TEXT", "priority": "INTEGER", "auto_replied_at": "TEXT", "attachments": "TEXT", "threat_level": "INTEGER", "forwarded_to": "TEXT", "forwarded_at": "TEXT", "last_seen": "TEXT", "junk": "INTEGER",
             "reply_to": "TEXT", "client_email": "TEXT", "client_name": "TEXT", "reply_self": "INTEGER",
-            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT"}
+            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT", "ai_summary": "TEXT"}
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -156,6 +156,9 @@ class Store:
     def junk_ids(self):
         """Письма, которые пришли в «Нежелательную почту» и ещё не переехали во «Входящие»."""
         return {r["id"] for r in self._rows("SELECT id FROM messages WHERE kind='in' AND junk=1")}
+
+    def set_ai_summary(self, mid, summary):
+        self._exec("UPDATE messages SET ai_summary=? WHERE id=?", ((summary or "")[:200] or None, mid))
 
     def set_junk(self, mid, junk):
         self._exec("UPDATE messages SET junk=? WHERE id=?", (1 if junk else 0, mid))

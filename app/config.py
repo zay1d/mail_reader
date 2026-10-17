@@ -120,6 +120,9 @@ DEFAULTS = {
     "staff": [],                          # сотрудники ресепшн (Настройки → Смены)
     "forward_removes_from_queue": True,   # пересланное в отдел письмо снимается с очереди ресепшн
     "forward_note": "Переслано с почты ресепшн Tashkent City Mall. Направление: {category}. Просьба ответить отправителю напрямую.",
+    "ai_enabled": False,                  # сортировка писем через ИИ (Claude API); выключено или нет ключа — по ключевым словам
+    "ai_api_key": "",                     # ключ API с console.anthropic.com (в Настройках не показывается)
+    "ai_model": "claude-opus-5-5",
 }
 
 _lock = threading.Lock()
@@ -233,5 +236,11 @@ def save(new_values: dict):
         return cfg
 
 def public():
-    """Настройки для интерфейса (секретов в конфиге нет)."""
-    return copy.deepcopy(get())
+    """Настройки для интерфейса. Ключ API ИИ не отдаётся — только признак, что он сохранён."""
+    c = copy.deepcopy(get())
+    c["ai_api_key_set"] = bool((c.get("ai_api_key") or "").strip())
+    c["ai_api_key"] = ""
+    import ai
+    c["ai_models"] = ai.MODELS
+    c["ai_default_hints"] = ai.DEFAULT_HINTS
+    return c

@@ -64,7 +64,7 @@ def make_handler(engine, ui_dir, reports_dir):
 
         # ---- PIN администратора: настройки, журнал, остановка программы ----
         PROTECTED = {"/api/settings", "/api/log", "/api/quit", "/api/outlook-diag", "/api/test-sound",
-                     "/api/telegram-chats", "/api/test-telegram"}
+                     "/api/telegram-chats", "/api/test-telegram", "/api/test-ai"}
 
         def _pin_ok(self, p):
             if p not in self.PROTECTED:
@@ -178,6 +178,9 @@ def make_handler(engine, ui_dir, reports_dir):
                     return self._json({"ok": True})
                 except Exception as e:
                     return self._json({"ok": False, "error": str(e)[:300]})
+            if p == "/api/test-ai":
+                ok, text = engine.test_ai()
+                return self._json({"ok": ok, "text": text})
             if p == "/api/demo":
                 return self._json({"ok": engine.demo(b.get("action"))})
             if p == "/api/quit":

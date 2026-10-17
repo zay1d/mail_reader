@@ -4,10 +4,10 @@
 import os, threading, time, traceback, webbrowser, html
 from datetime import datetime, timedelta
 
-import config, notify, threats, matcher, shifts, classify, telegram, autostart
+import config, notify, threats, matcher, shifts, classify, telegram, autostart, ai
 from store import Store
 
-VERSION = "1.34"
+VERSION = "1.35"
 # метки нашего письма-сигнала в СБ; письмо с [0] в теме вернулось в ящик ресепшн (автоответ, группа, пересылка) — без тревоги
 SB_MARKS = ("УГРОЗА: письмо на почту ресепшн", "Сработал сигнал угрозы в почте ресепшн")
 
@@ -53,6 +53,7 @@ class Engine:
         self.pin_pause_until = 0      # «Открыть письмо в Outlook» на красном экране — открепить на 90 с
         self.url = "http://127.0.0.1:%d/" % int(self.cfg.get("port") or 8791)
         self.log = []
+        self.ai = None
         self._reload_patterns()
         self._make_source()
         self._apply_count_from()
@@ -130,6 +131,9 @@ class Engine:
 
     def _reload_patterns(self):
         self.detector = threats.Detector(self.cfg)
+        old, self.ai = self.ai, ai.AiClassifier(self.cfg, self._log)
+        if old:
+            old.close()
         notify.configure(self.cfg.get("sound", True), self.cfg.get("toast", True))
 
     def _make_source(self):
@@ -144,6 +148,15 @@ class Engine:
             self.status = ("off", "Подключение…")
 
     def apply_settings(self, values):
+        values = dict(values or {})
+        values.pop("ai_api_key_set", None)
+        # ключ API в Настройках не показывается: пустое поле = оставить сохранённый, «Удалить ключ» = стереть
+        if values.pop("ai_api_key_clear", False):
+            values["ai_api_key"] = ""
+        elif not (values.get("ai_api_key") or "").strip():
+            values.pop("ai_api_key", None)
+        else:
+            values["ai_api_key"] = values["ai_api_key"].strip()
         old_mode = self.cfg.get("mode")
         old_auto = self.cfg.get("autostart", True)
         old = {k: self.cfg.get(k) for k in ("mailbox_address", "own_addresses")}
@@ -291,6 +304,7 @@ class Engine:
         new_letters = []
         rescued = []
         junk_ids = self.store.junk_ids()
+        ai_jobs = self._ai_start(incoming)
         for m in incoming:
             if self.store.has(m["id"]):
                 self.store.touch_in(m)
@@ -339,13 +353,27 @@ class Engine:
                 ign = ""
             if level == 1 and ign:
                 level, found = 0, []    # «возможная угроза» в рассылке: экрана нет — и в отчёте её быть не должно
-            lang = classify.detect_lang(m.get("body") or "", m.get("subject") or "")   # язык самого человека, не подписи/цитаты
+            air = self._ai_result(ai_jobs.get(m["id"])) if not ign else None
+            if air and air["threat"] and not level:
+                # ИИ увидел угрозу, которую не поймали ключевые слова: жёлтый экран, решает сотрудник (красный — только по словам)
+                level, found = 1, ["ИИ: " + (air["threat_reason"] or "возможная угроза")]
+            lang = (air and air["lang"]) or classify.detect_lang(m.get("body") or "", m.get("subject") or "")   # язык самого человека, не подписи/цитаты
             cat = classify.categorize(m.get("subject"), m.get("body"), self.cfg.get("categories"), level == 2)
+            if air and air["category"] and level != 2:
+                cat = air["category"]
             pri = 1 if level else classify.prioritize(m.get("subject"), m.get("body"), m.get("sender"),
                                                       bool(m.get("importance_high")), self.cfg.get("priority") or {}, cat)
+            if air and not level:
+                pri = ai.merge_priority(air["priority"], pri, bool(m.get("importance_high")), m.get("sender"),
+                                        self.cfg.get("priority") or {}, cat)
             rd = _p(m.get("received_at")) or datetime.now()
             key = shifts.shift_key_for(rd, self.cfg)
             if self.store.upsert_in(m, ign, found, key, lang, cat, pri, level):
+                if air:
+                    self.store.set_ai_summary(m["id"], air["summary"])
+                    self._log("ИИ: «%s» → %s, %s, %s%s" % (m.get("subject"), self.cat_name(cat),
+                              ((self.cfg.get("priority") or {}).get("names") or {}).get(str(pri), pri), lang,
+                              (" | " + air["summary"]) if air["summary"] else ""))
                 if not ign:
                     new_letters.append(m)
                 elif not self.first_poll:
@@ -415,6 +443,40 @@ class Engine:
         self.first_poll = False
         self.last_poll = datetime.now()
         self.status = src.status()
+
+    AI_MAX_PER_POLL = 40      # защита от расходов: больше писем за один опрос — остальные по ключевым словам
+
+    def _ai_start(self, incoming):
+        """Запустить ИИ-сортировку новых писем параллельно (до 4 одновременно), пока идёт разбор остальных.
+        Не отправляются в ИИ: уже известные, рассылки, служебные, «Нежелательная почта», из списка «не считать
+        входящими» и старые (старше «auto_reply_backlog_hours»: их не пересылают, а платить за них незачем)."""
+        jobs = {}
+        if not (self.ai and self.ai.enabled):
+            return jobs
+        old = datetime.now() - timedelta(hours=int(self.cfg.get("auto_reply_backlog_hours") or 16))
+        for m in incoming:
+            if len(jobs) >= self.AI_MAX_PER_POLL:
+                break
+            if (m.get("junk") or m.get("bulk") or (m.get("item_class") or 43) != 43 or self.store.has(m["id"])
+                    or (_p(m.get("received_at")) or datetime.now()) < old
+                    or matcher.is_ignored(m.get("sender"), m.get("sender_name"), m.get("subject"), self.cfg)):
+                continue
+            f = self.ai.classify_async(m)
+            if f is not None:
+                jobs[m["id"]] = f
+        return jobs
+
+    @staticmethod
+    def _ai_result(f):
+        if f is None:
+            return None
+        try:
+            return f.result(timeout=120)
+        except Exception:
+            return None
+
+    def test_ai(self):
+        return self.ai.test() if self.ai else (False, "ИИ не настроен")
 
     def _mark_vanished(self, since):
         """Письмо удалили или перенесли из Outlook (в «Удалённые», архив): в очереди ему висеть нельзя.
@@ -747,7 +809,7 @@ class Engine:
         keys = ("id", "sender", "sender_name", "subject", "body_preview", "received_at", "answered_at",
                 "threat_words", "threat_ack_at", "threat_level", "shift_key", "lang", "category", "priority", "auto_replied_at", "attachments",
                 "forwarded_to", "forwarded_at", "junk", "no_reply_reason", "ignored", "client_email", "client_name",
-                "reply_self", "self_reply_at", "self_reply_to", "unignored_at", "no_reply_at")
+                "reply_self", "self_reply_at", "self_reply_to", "unignored_at", "no_reply_at", "ai_summary")
         d = {k: m.get(k) for k in keys}
         d["can_open"] = bool(m.get("entry_id")) and self.cfg.get("mode") == "outlook"
         d["sla"] = self.sla_for(m.get("priority"))
@@ -843,6 +905,8 @@ class Engine:
             "closed": [self._pub(m, conv, True) for m in closed],
             "threats": [self._pub(m) for m in self.store.threats_pending()],
             "session": self._session_pub(),
+            "ai": {"enabled": bool(self.ai and self.ai.enabled), "model": self.ai.model if self.ai else "",
+                   "error": (self.ai.last_error if self.ai else "") or "", "classified": self.ai.ok_count if self.ai else 0},
             "staff": list(self.cfg.get("staff") or []) or (["Рахимова Дильноза", "Каримов Азиз", "Юсупова Малика", "Алимов Сардор"] if self.cfg.get("mode") == "demo" else []),
             "cfg": {"security_phone": self.cfg.get("security_phone") or "",
                     "manager_email": self.cfg.get("manager_email") or "",
