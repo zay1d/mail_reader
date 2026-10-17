@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Отчёты · Почта ресепшн</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="page">
+  <p><a href="index.html">← На экран ресепшн</a></p>
+  <h1>Отчёты по сменам</h1>
+  <p class="lead">Отчёт формируется в конце каждой смены и уходит руководителю. Здесь хранятся копии.</p>
+  <div class="sect">
+    <h2>Текущая смена</h2>
+    <p><a href="/api/report/preview" target="_blank">Посмотреть отчёт по текущей смене на этот момент</a> (не отправляется, только просмотр)</p>
+  </div>
+  <div class="sect">
+    <h2>Закрытые смены</h2>
+    <div id="list">Загрузка…</div>
+  </div>
+</div>
+<script>
+function escH(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+fetch('/api/reports').then(function(r){return r.json();}).then(function(d){
+  var byFile={}; (d.shifts||[]).forEach(function(s){byFile[s.report_path]=s;});
+  var el=document.getElementById('list');
+  if(!d.files.length){el.innerHTML='<p style="color:var(--mut)">Пока нет закрытых смен</p>';return;}
+  el.innerHTML=d.files.map(function(f){
+    var m=f.match(/(\d{4})-(\d{2})-(\d{2})(?:_\d{4})?(?:_s\d+)?_smena-(\d+)/); var s=byFile[f]||{};
+    var title=m?m[3]+'.'+m[2]+'.'+m[1]+' · '+(s.name||('Смена '+m[4])):f;
+    var dmy=function(t){return t.slice(8,10)+'.'+t.slice(5,7)+'.'+t.slice(0,4)+' '+t.slice(11,16);}; var meta=(s.start_at&&s.key&&s.key.charAt(0)==='s'?'открыта '+dmy(s.start_at)+' · ':'')+(s.closed_at?'закрыта '+dmy(s.closed_at):'')+(s.closed_by?' · '+escH(s.closed_by):'')+(s.sent_to?' · отправлен на '+escH(s.sent_to):' · не отправлялся');
+    return '<div class="rep"><div><a href="reports/'+encodeURIComponent(f)+'" target="_blank"><b>'+escH(title)+'</b></a><div class="help">'+meta+'</div></div></div>';
+  }).join('');
+});
+</script>
+</body>
+</html>

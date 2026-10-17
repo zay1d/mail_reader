@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Почта ресепшн</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="top">
+  <img src="logo.jpg" alt="TCM">
+  <div><h1>Почта ресепшн</h1><div class="sub">Tashkent City Mall · письма, которые ждут ответа</div></div>
+  <div class="spacer"></div>
+  <div class="shift-acts"><button class="btn-green" id="btn-close">Закрыть смену и отправить отчёт</button><a class="btn-reports" href="reports.html">Отчёты</a></div>
+  <div class="shift" id="shift">—<small id="shift-sub"></small></div>
+  <div class="clock" id="clock">--:--</div>
+  <div class="status" id="status"><span class="dot"></span><span id="status-text">Подключение…</span></div>
+  <div class="links"><a href="settings.html">Настройки</a></div>
+</header>
+
+<div class="demo-bar" id="demo-bar" hidden>
+  <b>ДЕМО-РЕЖИМ</b> письма вымышленные, Outlook не подключён.
+  <button data-demo="new">+ Новое письмо</button>
+  <button data-demo="reply">Ответить на первое</button>
+  <button data-demo="threat">Письмо с угрозой</button>
+  <button data-demo="suspicious">Письмо с намёком</button>
+  <button data-demo="forward_demo">Письмо маркетингу (пересылка)</button>
+  <button data-demo="form">Заявка с сайта</button>
+  <button data-demo="reset">Сброс</button>
+</div>
+
+<section class="kpis">
+  <div class="kpi" id="kpi-queue"><div class="num" id="k-queue">0</div><div class="lbl">Ждут ответа<small id="k-overdue"></small></div></div>
+  <div class="kpi"><div class="num" id="k-answered">0</div><div class="lbl">Отвечено за смену<small>ответы, отправленные из Outlook</small></div></div>
+  <div class="kpi"><div class="num" id="k-received">0</div><div class="lbl">Пришло за смену<small id="k-auto">без рассылок и автоуведомлений</small></div></div>
+</section>
+<div class="cats" id="cats"></div>
+<section class="pick" id="pick" hidden>
+  <div class="pick-h"><b id="pick-t"></b><span id="pick-s"></span><button class="pick-x" id="pick-x">Скрыть ✕</button></div>
+  <div class="list" id="pick-list"></div>
+</section>
+
+<main>
+  <h2>Нужно ответить <span class="count" id="c-queue">0</span><span class="legend"><span class="pri p1">Срочно</span> 15 мин · обычные 60 мин · <span class="pri p3">Низкий</span> 4 часа &nbsp;|&nbsp; <span class="sw g"></span> времени много <span class="sw y"></span> половина <span class="sw o"></span> меньше четверти <span class="sw r"></span> просрочено</span></h2>
+  <p class="hint">Нажмите «Ответить в Outlook» — откроется сам Outlook с выделенным письмом, ответьте в нём как обычно. Для заявок с сайта сразу откроется ответ с адресом клиента. Когда ответ отправлен, письмо исчезнет из списка само. Слева на карточке — сколько времени осталось до срока ответа. Срочные письма всегда сверху.</p>
+  <div id="queue"></div>
+  <div class="empty" id="empty" hidden><span id="empty-t">✓ Все письма отвечены</span><small>Новые письма появятся здесь автоматически</small></div>
+
+  <details id="d-answered"><summary>Отвечено за смену (<span id="c-answered">0</span>)</summary><div class="list" id="answered"></div></details>
+  <details id="d-forwarded"><summary>Переслано в отделы (<span id="c-forwarded">0</span>)</summary><div class="list" id="forwarded"></div></details>
+  <details id="d-closed"><summary>Сняты без ответа — угрозы и удалённые из Outlook (<span id="c-closed">0</span>)</summary><div class="list" id="closed-list"></div></details>
+  <details id="d-hidden"><summary>Не попали в очередь — рассылки и автописьма (<span id="c-hidden">0</span>)</summary>
+    <p class="hint list-hint">Эти письма программа посчитала рассылкой или автоматическим уведомлением: им не нужен ответ, автоответ они не получают. Если среди них письмо человека — нажмите «Нужен ответ», и оно встанет в очередь.</p>
+    <div class="list" id="hidden-list"></div></details>
+</main>
+
+
+<!-- Открыть смену -->
+<div class="modal blur" id="m-open" hidden>
+  <div class="box open-box">
+    <div id="op-step1">
+      <h3>Смена не открыта</h3>
+      <p id="op-shift" class="op-shift"></p>
+      <p>Чтобы начать работу, откройте смену и отметьте, кто заступил.</p>
+      <button class="btn-copper op-big" id="op-start">Открыть смену</button>
+    </div>
+    <div id="op-step2" hidden>
+      <h3>Кто заступает на смену?</h3>
+      <p class="hint">Отметьте всех сотрудников, которые работают в эту смену.</p>
+      <div class="staff" id="op-staff"></div>
+      <div id="op-free" hidden><label class="f">Список сотрудников не задан. Введите фамилии через запятую</label><input id="op-names" placeholder="Например: Рахимова, Каримов"></div>
+      <div class="btns"><button class="btn-copper op-big" id="op-confirm" disabled>Подтвердить</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- Закрыть смену -->
+<div class="modal" id="m-close" hidden>
+  <div class="box">
+    <h3 id="cl-title">Закрыть смену?</h3>
+    <p id="cl-text"></p>
+    <div id="cl-warn" class="warn" hidden></div>
+    <div id="cl-staff" class="info" hidden></div>
+    <div id="cl-name-wrap"><label class="f">Ваше имя (попадёт в отчёт)</label>
+    <input id="cl-name" placeholder="Например: Дильноза"></div>
+    <div class="btns"><button class="btn-ghost" data-close>Отмена</button><button class="btn-copper" id="cl-ok" style="font-size:16px;padding:12px 22px">Закрыть смену и отправить</button></div>
+  </div>
+</div>
+
+<!-- Результат -->
+<div class="modal" id="m-info" hidden>
+  <div class="box">
+    <h3 id="info-title"></h3>
+    <div id="info-body"></div>
+    <div class="btns"><button class="btn-primary" data-close>Понятно</button></div>
+  </div>
+</div>
+
+<!-- Угроза -->
+<div class="threat" id="threat" hidden>
+  <div class="threat-box">
+    <div class="threat-title" id="th-title">⚠ ВНИМАНИЕ! УГРОЗА</div>
+    <div class="threat-sub" id="th-sub">В письме найдены слова, указывающие на угрозу посетителям и торговому центру</div>
+    <div class="threat-mail" id="th-mail"></div>
+    <ol class="threat-steps" id="th-steps-red">
+      <li>Немедленно позвоните в службу безопасности: <b id="th-phone">по внутреннему телефону</b></li>
+      <li>Не удаляйте письмо и не отвечайте на него</li>
+      <li>После звонка нажмите кнопку «Я сообщил в службу безопасности»</li>
+    </ol>
+    <ol class="threat-steps" id="th-steps-yellow" hidden>
+      <li>Откройте письмо и прочитайте его целиком</li>
+      <li>Если это угроза — нажмите красную кнопку: включится тревога и уйдёт сигнал в службу безопасности</li>
+      <li>Если угрозы нет — нажмите «Угрозы нет», письмо останется в очереди на обычный ответ</li>
+    </ol>
+    <div class="btns" id="th-btns-red">
+      <button class="btn-big white" id="th-open">Открыть это письмо в Outlook</button>
+      <button class="btn-big dark" id="th-ack">Я сообщил в службу безопасности</button>
+    </div>
+    <div class="btns" id="th-btns-yellow" hidden>
+      <button class="btn-big dark" id="th-open2">Открыть это письмо в Outlook</button>
+      <button class="btn-big redbtn" id="th-esc">Это угроза — поднять тревогу</button>
+      <button class="btn-big ghostbtn" id="th-clear">Угрозы нет</button>
+    </div>
+    <div id="th-confirm" hidden>
+      <p>Вы точно позвонили в службу безопасности?</p>
+      <div class="btns"><button class="btn-ghost" id="th-no">Нет, ещё не звонил</button><button class="btn-danger" id="th-yes">Да, сообщил — закрыть сигнал</button></div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

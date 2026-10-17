@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Настройки · Почта ресепшн</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="modal blur" id="m-pin">
+  <div class="box open-box" style="width:min(420px,100%)">
+    <h3>Настройки</h3>
+    <p>Введите PIN администратора</p>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="off" style="font-size:26px;text-align:center;letter-spacing:8px;width:220px;padding:10px">
+    <div id="pin-err" class="warn" hidden style="margin-top:12px">Неверный PIN</div>
+    <div class="btns" style="justify-content:center;margin-top:16px"><a class="btn-ghost" href="index.html" style="text-decoration:none">Отмена</a><button class="btn-copper" id="pin-ok" style="font-size:16px;padding:12px 26px">Войти</button></div>
+  </div>
+</div>
+<div class="page" id="page" hidden>
+  <p><a href="index.html">← На экран ресепшн</a></p>
+  <h1>Настройки</h1>
+  <p class="lead">Страница для администратора. Сотрудникам ресепшн сюда заходить не нужно. <span id="ver" style="color:#8a93a6"></span></p>
+
+  <div class="sect">
+    <h2>Источник почты</h2>
+    <div class="radio">
+      <label><input type="radio" name="mode" value="demo"> Демо-режим (вымышленные письма)</label>
+      <label><input type="radio" name="mode" value="outlook"> Outlook на этом компьютере</label>
+    </div>
+    <label class="f">Адрес ящика ресепшн в Outlook (можно оставить пустым: программа сама найдёт ящик из поля «Свои адреса»)</label>
+    <input id="mailbox_address" placeholder="contact@tcmall.uz">
+    <p style="margin:10px 0 0"><button class="btn-ghost" id="btn-diag" style="padding:9px 14px;font-size:14px">Проверить подключение к Outlook</button></p>
+    <div class="log" id="diag" hidden style="margin-top:8px"></div>
+    <div class="grid2">
+      <div><label class="f">Опрос почты, секунд</label><input id="poll_seconds" type="number" min="5"></div>
+      <div><label class="f">Сколько дней назад читать при запуске</label><input id="lookback_days" type="number" min="1" max="30"></div>
+    </div>
+    <label class="f">Учитывать письма начиная с (дата и время запуска). Всё, что пришло раньше, программа не показывает, не считает и не отвечает на это автоматически</label>
+    <div style="display:flex;gap:10px;align-items:center"><input id="count_from" type="datetime-local" style="max-width:260px"><button class="btn-ghost" id="btn-now" style="padding:9px 14px;font-size:14px">Поставить «сейчас»</button><button class="btn-ghost" id="btn-nocf" style="padding:9px 14px;font-size:14px">Очистить</button></div>
+    <p class="help">Задайте при первом подключении к реальному ящику, чтобы старые письма не попали в очередь и в первый отчёт. Пусто = читать почту за «сколько дней назад».</p>
+    <label class="f">Свои адреса (письма с них не считаются входящими), по одному в строке</label>
+    <textarea id="own_addresses" style="min-height:60px"></textarea>
+  </div>
+
+  <div class="sect">
+    <h2>Напоминания и сроки</h2>
+    <div class="grid3">
+      <div><label class="f">Повтор напоминания о просрочке, минут</label><input id="repeat_alert_minutes" type="number" min="1"></div>
+    </div>
+    <p class="help">Сроки ответа задаются по приоритетам ниже. Таймер на карточке показывает остаток срока: жёлтый — меньше половины, оранжевый — меньше четверти, красный — просрочено.</p>
+    <label class="check"><input type="checkbox" id="sound"> Звук тревоги при угрозе (новые письма и просрочка — без звука)</label>
+    <label class="check"><input type="checkbox" id="toast"> Всплывающие уведомления Windows</label>
+    <div><label class="f">PIN администратора для входа в Настройки (4–8 цифр; по умолчанию 0000 — смените при установке)</label><input id="admin_pin" type="text" inputmode="numeric" maxlength="8" style="width:160px"></div>
+    <label class="check"><input type="checkbox" id="autostart"> Запускать программу автоматически при включении компьютера (после сна и закрытой крышки программа продолжает работать сама)</label>
+    <button class="btn-ghost" id="btn-test">Проверить звук и уведомление</button>
+  </div>
+
+  <div class="sect">
+    <h2>Смены и отчёт</h2>
+    <label class="f">Рабочие часы смен: название;начало;конец — по одной в строке. Смены открываются и закрываются только кнопками на экране; часы нужны для названия смены в отчёте и для ночных писем (срок ответа считается с начала рабочего дня)</label>
+    <textarea id="shifts" style="min-height:60px"></textarea>
+    <label class="f">Сотрудники ресепшн (по одному в строке). При открытии смены сотрудники отмечают себя галочками, фамилии попадают в шапку экрана и в отчёт</label>
+    <textarea id="staff" style="min-height:90px" placeholder="Рахимова Дильноза&#10;Каримов Азиз"></textarea>
+    <p class="help">Смену открывают и закрывают только сотрудники кнопками на экране. В отчёт смены попадает всё от закрытия предыдущей смены до нажатия «Закрыть смену»; часы на это не влияют. Если прошлая смена забыла закрыться, следующая сначала закрывает её, затем открывает свою.</p>
+    <div class="grid2">
+      <div><label class="f">Почта руководителя ресепшн (кому отчёт)</label><input id="manager_email" placeholder="manager@example.uz"></div>
+      <div><label class="f">Копия отчёта (через запятую)</label><input id="report_cc"></div>
+    </div>
+  </div>
+
+  <div class="sect">
+    <h2>Угрозы</h2>
+    <div class="grid2">
+      <div><label class="f">Телефон службы безопасности (показывается на красном экране)</label><input id="security_phone" placeholder="внутр. 112"></div>
+      <div><label class="f">Почта службы безопасности (письмо уходит автоматически)</label><input id="security_email"></div>
+    </div>
+    <div class="grid2">
+      <div><label class="f">Telegram: токен бота (от @BotFather)</label><input id="telegram_bot_token" placeholder="123456789:AA..."></div>
+      <div><label class="f">Telegram: получатели тревоги — ID группы и личных чатов через запятую</label><input id="telegram_chat_id" placeholder="-1001234567890, 123456789"></div>
+    </div>
+    <p class="help">Личный получатель должен один раз написать боту «/start», группа — добавить бота участником. Затем нажмите <button class="btn-ghost" id="btn-tgchats" style="padding:6px 12px;font-size:13px">Показать, кто написал боту</button> и добавьте нужных. <span id="tg-chats"></span></p>
+    <p class="help">Бота нужно добавить в группу СБ. Это единственный выход программы в интернет: в Telegram уходит только сигнал об угрозе (отправитель, тема, найденные слова, начало текста). <button class="btn-ghost" id="btn-tg" style="padding:6px 12px;font-size:13px">Отправить проверочное сообщение</button> <span id="tg-res"></span></p>
+    <label class="f">Явная угроза — КРАСНЫЙ экран (регулярные выражения, по одному в строке; \b — начало слова)</label>
+    <textarea id="threat_words" style="min-height:160px"></textarea>
+    <label class="f">Исключения: если такая фраза стоит рядом с найденным словом, тревоги нет («взрывной рост», «photo shoot»)</label>
+    <textarea id="threat_exceptions" style="min-height:70px"></textarea>
+    <label class="f">Возможная угроза — ЖЁЛТЫЙ экран: запугивание и намёки без явных слов («пожалеете», «найдём вас», «last warning»)</label>
+    <textarea id="threat_soft_words" style="min-height:120px"></textarea>
+    <div class="grid2">
+      <div><label class="f">Слова места (для комбинации «место + время» → жёлтый)</label><textarea id="threat_place_words" style="min-height:90px"></textarea></div>
+      <div><label class="f">Слова времени («через час», «сегодня в», «tonight»)</label><textarea id="threat_time_words" style="min-height:90px"></textarea></div>
+    </div>
+    <label class="f">Признаки обычного делового письма: при них комбинация «место + время» не срабатывает («здравствуйте», «с уважением», «please»)</label>
+    <textarea id="threat_polite_words" style="min-height:60px"></textarea>
+    <p class="help">Проверяются тема и текст письма на русском, узбекском (латиница и кириллица) и английском. Учитываются разрядка («б о м б а»), точки между буквами и латинские буквы вместо русских. Красный экран: сирена, письмо и Telegram в СБ. Жёлтый: звук и окно «проверьте письмо», сотрудник решает — поднять тревогу или снять.</p>
+  </div>
+
+  <div class="sect">
+    <h2>Автоответ</h2>
+    <label class="check"><input type="checkbox" id="auto_reply_enabled"> Отправлять автоматическое подтверждение на новые письма</label>
+    <p class="help">Подтверждение «ваше обращение получено» уходит на языке письма (русский, узбекский, английский) по шаблону направления. Уходит на каждое новое письмо. Не отправляется: на угрозы, рассылки и автоуведомления, коллегам с адресов своего домена (@tcmall.uz), повторно тому же адресу по той же теме, больше 5 раз в час одному адресу. Письмо остаётся в очереди до ответа сотрудника.</p>
+    <label class="f">Телефон ресепшн в подписи ({phone})</label>
+    <input id="reception_phone" placeholder="+998 71 000 00 00">
+    <div class="grid2">
+      <div><label class="f">Направление</label><select id="tpl_cat"></select></div>
+      <div><label class="f">Язык</label><select id="tpl_lang"><option value="ru">Русский</option><option value="uz">Узбекский</option><option value="en">Английский</option></select></div>
+    </div>
+    <label class="f">Текст шаблона (подстановки: {phone}, {name})</label>
+    <textarea id="tpl_text" style="min-height:160px"></textarea>
+    <p class="help">Если шаблон направления пуст, уходит шаблон «Общие вопросы». На письма с угрозами автоответ не уходит никогда.</p>
+  </div>
+
+  <div class="sect">
+    <h2>Приоритеты</h2>
+    <div class="grid3">
+      <div><label class="f">Срочно: ответить за минут</label><input id="sla1" type="number" min="1"></div>
+      <div><label class="f">Обычно: за минут</label><input id="sla2" type="number" min="1"></div>
+      <div><label class="f">Низкий: за минут</label><input id="sla3" type="number" min="1"></div>
+    </div>
+    <div class="grid2">
+      <div><label class="f">Слова срочности (по одному в строке)</label><textarea id="urgent_words" style="min-height:120px"></textarea></div>
+      <div><label class="f">Слова низкого приоритета (КП, прайсы, рассылки)</label><textarea id="low_words" style="min-height:120px"></textarea></div>
+    </div>
+    <label class="f">VIP-отправители: часть адреса или домен, письма от них всегда срочные (по одному в строке)</label>
+    <textarea id="vip_senders" style="min-height:60px" placeholder="gov.uz&#10;director@"></textarea>
+    <p class="help">Также срочными считаются: письма с флагом «Важное» в Outlook, направления «Жалобы» и «Безопасность», угрозы. Низкий приоритет — направление «Вакансии».</p>
+  </div>
+
+  <div class="sect">
+    <h2>Направления (категории писем)</h2>
+    <div class="grid2">
+      <div><label class="f">Направление</label><select id="cat_key"></select></div>
+      <div><label class="f">Название на экране</label><input id="cat_name"></div>
+    </div>
+    <label class="f">Пересылать письма этого направления на адрес (пусто = не пересылать)</label>
+    <input id="cat_forward" placeholder="marketing@example.uz">
+    <label class="f">Ключевые слова направления (части слов, по одному в строке; в теме письма вес выше)</label>
+    <textarea id="cat_words" style="min-height:120px"></textarea>
+    <p class="help">Письмо попадает в направление с наибольшим числом совпадений. Если совпадений нет — «Общие вопросы». Жалоба побеждает при любом совпадении.</p>
+    <label class="check"><input type="checkbox" id="forward_removes_from_queue"> Пересланное в отдел письмо снимать с очереди ресепшн (отвечает отдел; в отчёте — отдельной строкой «Переслано»)</label>
+    <label class="f">Пометка сверху пересланного письма ({category} — название направления)</label>
+    <input id="forward_note">
+    <p class="help">Пересылка идёт из ящика ресепшн через Outlook вместе с вложениями. Автоответ отправителю уходит как обычно. Угрозы не пересылаются.</p>
+  </div>
+
+  <div class="sect">
+    <h2>Что не считать входящими</h2>
+    <div class="grid2">
+      <div><label class="f">Отправители (часть адреса или имени), по одному в строке</label><textarea id="ignore_senders"></textarea></div>
+      <div><label class="f">Темы (часть темы), по одной в строке</label><textarea id="ignore_subjects"></textarea></div>
+    </div>
+  </div>
+
+  <div class="btns" style="justify-content:flex-start">
+    <button class="btn-primary" id="btn-save">Сохранить настройки</button><span class="saved" id="saved" hidden>Сохранено</span>
+  </div>
+
+  <div class="sect" style="margin-top:24px">
+    <h2>Служебное</h2>
+    <p><button class="btn-ghost" id="btn-log">Показать журнал программы</button> <button class="btn-ghost" id="btn-quit" style="color:var(--red)">Остановить программу</button></p>
+    <div class="log" id="log" hidden></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id);};
+  var lines=function(s){return s.split('\n').map(function(x){return x.trim();}).filter(Boolean);};
+  // слова словарей: пробел в конце значим («pr » — не «print», «тц » — не «тцентр»), сохраняем его
+  var words=function(s){return s.split('\n').map(function(x){x=x.replace(/\r/g,'').replace(/^\s+/,''); return /\s$/.test(x)?x.replace(/\s+$/,'')+' ':x;}).filter(function(x){return x.trim();});};
+  var cfg=null;
+  // ---- PIN администратора: во все запросы страницы добавляется заголовок X-Pin ----
+  var pin=''; try{pin=sessionStorage.getItem('rm_pin')||'';}catch(e){}
+  var _fetch=window.fetch;
+  window.fetch=function(u,o){o=o||{};o.headers=Object.assign({},o.headers||{},{'X-Pin':pin});return _fetch(u,o);};
+  function tryPin(){
+    return fetch('/api/settings').then(function(r){ if(r.status===403) throw new Error('pin'); return r.json(); });
+  }
+  function enter(){
+    pin=$('pin').value.trim(); $('pin-ok').disabled=true;
+    tryPin().then(function(c){ try{sessionStorage.setItem('rm_pin',pin);}catch(e){} $('m-pin').hidden=true; $('page').hidden=false; load(c); })
+      .catch(function(){ $('pin-err').hidden=false; $('pin').value=''; $('pin').focus(); $('pin-ok').disabled=false; });
+  }
+  $('pin-ok').onclick=enter; $('pin').onkeydown=function(e){ if(e.key==='Enter'||e.keyCode===13) enter(); };
+  if(pin){ tryPin().then(function(c){ $('m-pin').hidden=true; $('page').hidden=false; load(c); }).catch(function(){ pin=''; $('pin').focus(); }); } else { $('pin').focus(); }
+  function load(c){
+    fetch('/api/state').then(function(r){return r.json();}).then(function(st){if(st.version)document.getElementById('ver').textContent='Версия программы: '+st.version;}).catch(function(){});
+    cfg=c;
+    $('admin_pin').value=c.admin_pin==null?'0000':String(c.admin_pin);
+    document.querySelector('input[name=mode][value='+c.mode+']').checked=true;
+    ['mailbox_address','count_from','poll_seconds','lookback_days','repeat_alert_minutes','manager_email','report_cc','security_phone','security_email','telegram_bot_token','telegram_chat_id'].forEach(function(k){$(k).value=c[k]==null?'':c[k];});
+    ['own_addresses','ignore_senders','ignore_subjects','threat_words','threat_exceptions','threat_soft_words','threat_place_words','threat_time_words','threat_polite_words','staff'].forEach(function(k){$(k).value=(c[k]||[]).join('\n');});
+    $('shifts').value=(c.shifts||[]).map(function(s){return s.name+';'+s.start+';'+s.end;}).join('\n');
+    $('sound').checked=!!c.sound; $('toast').checked=!!c.toast; $('autostart').checked=c.autostart!==false;
+    // автоответ
+    $('auto_reply_enabled').checked=!!c.auto_reply_enabled; $('reception_phone').value=c.reception_phone||'';
+    $('forward_removes_from_queue').checked=c.forward_removes_from_queue!==false; $('forward_note').value=c.forward_note||'';
+    tpls=JSON.parse(JSON.stringify(c.auto_reply_templates||{}));
+    cats=JSON.parse(JSON.stringify(c.categories||[]));
+    $('tpl_cat').innerHTML=cats.map(function(x){return '<option value="'+x.key+'">'+x.name+'</option>';}).join('');
+    $('cat_key').innerHTML=$('tpl_cat').innerHTML;
+    showTpl(); showCat();
+    // приоритеты
+    var p=c.priority||{}; $('sla1').value=(p.sla||{})['1']||15; $('sla2').value=(p.sla||{})['2']||60; $('sla3').value=(p.sla||{})['3']||240;
+    $('urgent_words').value=(p.urgent_words||[]).join('\n'); $('low_words').value=(p.low_words||[]).join('\n'); $('vip_senders').value=(p.vip_senders||[]).join('\n');
+  }
+  var tpls={}, cats=[], curTpl=null, curCat=null;
+  function showTpl(){ var k=$('tpl_cat').value, l=$('tpl_lang').value; curTpl=[k,l]; $('tpl_text').value=((tpls[k]||{})[l])||''; }
+  function saveTpl(){ if(!curTpl)return; var k=curTpl[0], l=curTpl[1]; tpls[k]=tpls[k]||{}; tpls[k][l]=$('tpl_text').value; }
+  $('tpl_cat').onchange=$('tpl_lang').onchange=function(){ saveTpl(); showTpl(); };
+  $('tpl_text').oninput=saveTpl;
+  function findCat(k){ for(var i=0;i<cats.length;i++) if(cats[i].key===k) return cats[i]; return null; }
+  function showCat(){ var x=findCat($('cat_key').value); curCat=x; $('cat_name').value=x?x.name:''; $('cat_forward').value=x?(x.forward_to||''):''; $('cat_words').value=x?(x.words||[]).join('\n'):''; }
+  function saveCat(){ if(!curCat)return; curCat.name=$('cat_name').value.trim()||curCat.name; curCat.forward_to=$('cat_forward').value.trim(); curCat.words=words($('cat_words').value); }
+  $('cat_key').onchange=function(){ saveCat(); showCat(); };
+  $('cat_name').oninput=$('cat_words').oninput=$('cat_forward').oninput=saveCat;
+  $('btn-save').onclick=function(){
+    saveTpl(); saveCat();
+    var v={mode:document.querySelector('input[name=mode]:checked').value};
+    v.auto_reply_enabled=$('auto_reply_enabled').checked; v.reception_phone=$('reception_phone').value.trim();
+    v.auto_reply_templates=tpls; v.categories=cats;
+    v.forward_removes_from_queue=$('forward_removes_from_queue').checked; v.forward_note=$('forward_note').value.trim();
+    v.priority=Object.assign({}, cfg.priority||{}, {sla:{'1':parseInt($('sla1').value,10)||15,'2':parseInt($('sla2').value,10)||60,'3':parseInt($('sla3').value,10)||240},
+      urgent_words:words($('urgent_words').value), low_words:words($('low_words').value), vip_senders:lines($('vip_senders').value)});
+    ['mailbox_address','count_from','manager_email','report_cc','security_phone','security_email','telegram_bot_token','telegram_chat_id'].forEach(function(k){v[k]=$(k).value.trim();});
+    ['poll_seconds','lookback_days','repeat_alert_minutes'].forEach(function(k){v[k]=parseInt($(k).value,10)||cfg[k];});
+    ['own_addresses','ignore_senders','ignore_subjects','staff'].forEach(function(k){v[k]=lines($(k).value);});
+    ['threat_words','threat_exceptions','threat_soft_words','threat_place_words','threat_time_words','threat_polite_words'].forEach(function(k){v[k]=words($(k).value);});
+    v.shifts=lines($('shifts').value).map(function(l){var p=l.split(';');return {name:(p[0]||'').trim(),start:(p[1]||'09:00').trim(),end:(p[2]||'17:00').trim()};}).filter(function(s){return s.name;});
+    var badShift=v.shifts.filter(function(s){return !/^\d{1,2}[:.]\d{2}$/.test(s.start)||!/^\d{1,2}[:.]\d{2}$/.test(s.end);})[0];
+    if(badShift){alert('Смены: время пишется ЧЧ:ММ через точку с запятой, например «Смена 1;09:00;17:00». Ошибка в строке «'+badShift.name+'».');return;}
+    v.sound=$('sound').checked; v.toast=$('toast').checked; v.autostart=$('autostart').checked;
+    var np=$('admin_pin').value.trim(); if(!/^\d{4,8}$/.test(np)){alert('PIN — от 4 до 8 цифр');return;} v.admin_pin=np;
+    fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)}).then(function(r){ if(r.status===403){alert('Сессия настроек истекла, введите PIN заново');location.reload();return;} if(!r.ok){alert('Настройки не сохранены: ошибка программы ('+r.status+'). Подробности — в журнале.');return;} pin=np; try{sessionStorage.setItem('rm_pin',pin);}catch(e){} $('saved').hidden=false;setTimeout(function(){$('saved').hidden=true;},2500);}).catch(function(){alert('Программа не отвечает — настройки не сохранены');});
+  };
+  $('btn-now').onclick=function(){var d=new Date();var p=function(n){return (n<10?'0':'')+n;};$('count_from').value=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());};
+  $('btn-nocf').onclick=function(){$('count_from').value='';};
+  $('btn-diag').onclick=function(){ $('diag').hidden=false; $('diag').textContent='Проверка… (сначала сохраните настройки, если меняли адрес)'; fetch('/api/outlook-diag',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ $('diag').textContent=d.text; }).catch(function(){ $('diag').textContent='Программа не отвечает'; }); };
+  $('btn-test').onclick=function(){fetch('/api/test-sound',{method:'POST'});};
+  function escH(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  $('btn-tgchats').onclick=function(){ $('tg-chats').textContent='Запрос… (токен должен быть сохранён)'; fetch('/api/telegram-chats',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ if(!d.ok){$('tg-chats').textContent='Ошибка: '+(d.error||'');return;} if(!d.chats.length){$('tg-chats').textContent='Пока никто не писал боту.';return;} $('tg-chats').innerHTML=d.chats.map(function(c){return '<button class="btn-ghost" style="padding:4px 10px;font-size:13px;margin:3px" data-cid="'+escH(c.chat_id)+'">+ '+escH(c.name)+' ('+(c.type==='private'?'личный':escH(c.type))+', '+escH(c.chat_id)+')</button>';}).join(''); Array.prototype.forEach.call($('tg-chats').querySelectorAll('button'),function(b){b.onclick=function(){var v=$('telegram_chat_id').value.trim(); var ids=v?v.split(',').map(function(x){return x.trim();}):[]; if(ids.indexOf(b.dataset.cid)<0) ids.push(b.dataset.cid); $('telegram_chat_id').value=ids.join(', ');};}); }); };
+  $('btn-tg').onclick=function(){ $('tg-res').textContent='Отправка… (сначала нажмите «Сохранить настройки»)'; fetch('/api/test-telegram',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ $('tg-res').textContent=d.ok?'Отправлено, проверьте группу':'Ошибка: '+(d.error||''); $('tg-res').style.color=d.ok?'var(--green)':'var(--red)'; }); };
+  $('btn-log').onclick=function(){fetch('/api/log').then(function(r){return r.json();}).then(function(d){$('log').textContent=(d.log||[]).join('\n')||'Журнал пуст';$('log').hidden=false;$('log').scrollTop=$('log').scrollHeight;});};
+  $('btn-quit').onclick=function(){if(confirm('Остановить программу? Письма перестанут отслеживаться до следующего запуска.')){fetch('/api/quit',{method:'POST'});setTimeout(function(){document.body.innerHTML='<div class="page"><h1>Программа остановлена</h1><p>Чтобы запустить снова — откройте ярлык «Почта ресепшн».</p></div>';},500);}};
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# собранная программа и рабочие данные
+*.exe
+build/
+dist/
+__pycache__/
+*.pyc
+data/*
+!data/.keep
+reports/*
+!reports/.keep
+config.json.broken
