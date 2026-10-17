@@ -29,6 +29,7 @@ class Engine:
         self.store = Store(os.path.join(base, "data", "mail.db"))
         self.reports_dir = os.path.join(base, "reports")
         self.lock = threading.RLock()
+        self.shift_lock = threading.Lock()   # закрытие/открытие смены: две вкладки экрана не отправят отчёт дважды
         self.source = None
         self.status = ("off", "Запуск…")
         self.first_poll = True
@@ -675,11 +676,17 @@ class Engine:
                 use_tg = bool((self.cfg.get("telegram_bot_token") or "").strip())
                 to = (self.cfg.get("security_email") or "").strip()
                 if use_tg and not st["tg"]:
-                    try:
-                        telegram.send_message(self.cfg.get("telegram_bot_token"), self.cfg.get("telegram_chat_id"),
-                                              telegram.threat_text(m, self.cfg.get("reception_phone")))
-                        st["tg"] = True
-                        self._log("Тревога отправлена в Telegram СБ")
+                    try:   # каждому получателю отдельно: не дошло одному — повтор только ему
+                        done = st.setdefault("tg_ok", set())
+                        sent, errs = telegram.send_each(self.cfg.get("telegram_bot_token"), self.cfg.get("telegram_chat_id"),
+                                                        telegram.threat_text(m, self.cfg.get("reception_phone")), skip=done)
+                        done.update(sent)
+                        if sent:
+                            self._log("Тревога отправлена в Telegram: " + ", ".join(sent))
+                        if errs:
+                            self._log("Telegram: тревога НЕ дошла (повтор через 2 мин): " + "; ".join(errs)[:300])
+                        else:
+                            st["tg"] = True
                     except Exception as e:
                         self._log("Telegram: не удалось отправить тревогу (повтор через 2 мин): " + str(e)[:200])
                 if to and not st["mail"]:
@@ -932,6 +939,14 @@ class Engine:
         staff = [str(x).strip() for x in (staff or []) if str(x).strip()]
         if not staff:
             return {"error": "Выберите хотя бы одного сотрудника"}
+        if not self.shift_lock.acquire(timeout=40):
+            return {"error": "Смена сейчас закрывается — подождите несколько секунд"}
+        try:
+            return self._open_shift(staff)
+        finally:
+            self.shift_lock.release()
+
+    def _open_shift(self, staff):
         if self.store.session_current():
             return {"error": "Смена уже открыта. Сначала закройте её."}
         self.store.session_open("", staff, self.cfg.get("mode"))
@@ -977,6 +992,9 @@ class Engine:
 
     def threat_clear(self, mid):
         """Жёлтый: сотрудник проверил, угрозы нет. Письмо остаётся в очереди на ответ."""
+        rec = self.store.get(mid)
+        if not rec or (rec.get("threat_level") or 2) != 1:
+            return False                  # явную угрозу (красный) так снять нельзя — только «Я сообщил в СБ»
         self.store.ack_threat(mid)
         self.after_clear.append(mid)
         self.poll_now = True
@@ -1002,6 +1020,14 @@ class Engine:
         return ok
 
     def close_shift(self, by):
+        if not self.shift_lock.acquire(blocking=False):
+            return {"error": "Смена уже закрывается (нажали в другом окне) — подождите"}
+        try:
+            return self._close_shift(by)
+        finally:
+            self.shift_lock.release()
+
+    def _close_shift(self, by):
         s = self._current_shift()
         if not s:
             return {"error": "Нет открытой смены для закрытия"}

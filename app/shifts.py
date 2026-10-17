@@ -53,11 +53,13 @@ def _dur(m):
 def shifts_of_day(day, cfg):
     """Список смен даты day с окнами учёта писем."""
     base = datetime(day.year, day.month, day.day)
-    lst = valid_shifts(cfg)
+    lst = sorted(valid_shifts(cfg), key=lambda s: _hm(s["start"]))   # смены могли ввести не по порядку
     out = []
     for i, s in enumerate(lst):
         start = base + timedelta(minutes=_hm(s["start"]))
         end = base + timedelta(minutes=_hm(s["end"]))
+        if end <= start:              # «16:00;00:00» или ночная «20:00;08:00» — конец на следующий день
+            end += timedelta(days=1)
         win_start = base if i == 0 else start
         win_end = base + timedelta(days=1) if i == len(lst) - 1 else base + timedelta(minutes=_hm(lst[i + 1]["start"]))
         out.append({
@@ -77,13 +79,11 @@ def shift_key_for(dt, cfg):
 def sla_start(dt, cfg):
     """С какого момента считать срок ответа: письмо в рабочие часы — с получения;
     ночное (вне смен) — с начала ближайшей смены."""
-    for d in (dt, dt + timedelta(days=1)):
-        for s in shifts_of_day(d, cfg):
-            if s["start"] <= dt < s["end"]:
-                return dt
-            if s["start"] > dt:
-                return s["start"]
-    return dt
+    sh = [s for d in (dt - timedelta(days=1), dt, dt + timedelta(days=1)) for s in shifts_of_day(d, cfg)]
+    if any(s["start"] <= dt < s["end"] for s in sh):     # в т.ч. ночная смена, начавшаяся вчера
+        return dt
+    nxt = [s["start"] for s in sh if s["start"] > dt]
+    return min(nxt) if nxt else dt
 
 def is_night(dt, cfg):
     return sla_start(dt, cfg) != dt

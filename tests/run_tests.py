@@ -86,4 +86,29 @@ fail = run("fail")
 check([r["category"] for r in fail["rows"]] == [r["category"] for r in off["rows"]], "ИИ с ошибкой — сортировка по ключевым словам как без ИИ")
 check("ключ" in (fail["ai"]["error"] or ""), "ошибка ИИ видна в статусе: " + (fail["ai"]["error"] or ""))
 
+# детектор угроз: настоящие угрозы ловятся, безобидные обороты — нет
+sys.path.insert(0, os.path.join(ROOT, "app"))
+import config, threats
+det = threats.Detector(config.DEFAULTS)
+RED = ["Я живу в квартире рядом с ТЦ. Завтра будет стрельба", "Hammangizni oʻldiraman", "binoda to‘pponcha bor",
+       "Savdo markazga oʻt qoʻyaman", "I will kill\r\nyou all", "заложено взрывное\r\nустройство",
+       "В здании бом\u00adба", "бом\u200bба", "Всех зарежу в вашем ТЦ", "Ваше здание взлетит на воздух",
+       "I will murder you all", "I will shoot up the mall", "В вашем ТЦ заложена бомба"]
+NONE = ["Стрельба в тире завтра", "Это просто бомба! Скидки", "photo shoot in the mall", "Порежу торт",
+        "Хотим арендовать помещение 40 кв.м", "Скидки взлетят до небес", "Murder mystery quest для детей"]
+for t in RED:
+    check(det.analyze(t)[0] == 2, "угроза: " + t.replace("\r\n", " ")[:40])
+for t in NONE:
+    check(det.analyze(t)[0] == 0, "не угроза: " + t)
+check(det.analyze("мы найдем\r\nвас")[0] == 1, "возможная угроза через перенос строки")
+
+# сроки: вечерняя смена до 00:00 и ночная смена
+import shifts
+from datetime import datetime as _dt
+c2 = dict(config.DEFAULTS, shifts=[{"name": "1", "start": "09:00", "end": "17:00"}, {"name": "2", "start": "16:00", "end": "00:00"}])
+check(shifts.sla_start(_dt(2026, 10, 17, 18, 30), c2) == _dt(2026, 10, 17, 18, 30), "смена до 00:00: письмо в 18:30 не «ночное»")
+check(shifts.sla_start(_dt(2026, 10, 18, 3, 0), c2) == _dt(2026, 10, 18, 9, 0), "письмо в 03:00 — срок с 09:00")
+c3 = dict(config.DEFAULTS, shifts=[{"name": "н", "start": "20:00", "end": "08:00"}])
+check(shifts.sla_start(_dt(2026, 10, 18, 3, 0), c3) == _dt(2026, 10, 18, 3, 0), "ночная смена 20–08: письмо в 03:00 в рабочее время")
+
 sys.exit(1 if check.failed else 0)

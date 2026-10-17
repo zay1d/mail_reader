@@ -230,8 +230,14 @@ def save(new_values: dict):
                 trem[k] = [w for w in DEFAULTS.get(k) or [] if w.rstrip() not in have]
         cfg["threat_removed"] = trem
         cfg.pop("_config_error", None)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        # запись через временный файл: обрыв питания посреди записи не портит config.json
+        # (битый файл = программа в демо-режиме без контроля почты и угроз)
+        tmp = CONFIG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({k: v for k, v in cfg.items() if not k.startswith("_")}, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_PATH)
         _cfg = cfg
         return cfg
 

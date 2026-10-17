@@ -338,9 +338,13 @@
     api('/api/threat-escalate', { id: $('threat').dataset.id }).then(poll);
   });
   $('th-clear').addEventListener('click', function () { api('/api/threat-clear', { id: $('threat').dataset.id }).then(poll); });
-  $('th-ack').addEventListener('click', function () { hide('th-btns-red'); show('th-confirm'); });
-  $('th-no').addEventListener('click', function () { hide('th-confirm'); show('th-btns-red'); });
+  // id угрозы запоминаем при нажатии «Я сообщил»: обновление экрана раз в 2 с может показать другую угрозу
+  var ackId = null;
+  $('th-ack').addEventListener('click', function () { ackId = $('threat').dataset.id; hide('th-btns-red'); show('th-confirm'); });
+  $('th-no').addEventListener('click', function () { ackId = null; hide('th-confirm'); show('th-btns-red'); });
   $('th-yes').addEventListener('click', function () {
-    api('/api/threat-ack', { id: $('threat').dataset.id }).then(function () { hide('th-confirm'); poll(); });
+    if (!ackId || ackId !== $('threat').dataset.id) { ackId = null; hide('th-confirm'); show('th-btns-red'); return; }
+    var id = ackId; ackId = null;
+    api('/api/threat-ack', { id: id }).then(function () { hide('th-confirm'); poll(); });
   });
 })();

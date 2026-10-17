@@ -1,25 +1,34 @@
 # -*- coding: utf-8 -*-
 """Отправка тревоги в группу Telegram службы безопасности (Bot API, только stdlib).
 Единственный выход программы в интернет; используется только для сигнала об угрозе."""
-import json, urllib.request, urllib.parse
+import json, urllib.request, urllib.parse, urllib.error
 
 def _ids(chat_id):
     return [x.strip() for x in str(chat_id or "").replace(";", ",").split(",") if x.strip()]
 
-def send_message(token, chat_id, text, timeout=10):
-    """chat_id — один ID или несколько через запятую (группа СБ + личные чаты)."""
+def send_each(token, chat_id, text, skip=(), timeout=10):
+    """Отправить каждому получателю (кроме уже получивших — skip). -> (кому ушло, [ошибки])."""
     token = (token or "").strip()
     ids = _ids(chat_id)
     if not token or not ids:
         raise RuntimeError("Не задан токен бота или получатели")
-    errors = []
+    sent, errors = [], []
     for cid in ids:
+        if cid in skip:
+            continue
         try:
             _send_one(token, cid, text, timeout)
+            sent.append(cid)
         except Exception as e:
-            errors.append("%s: %s" % (cid, str(e)[:80]))
-    if len(errors) == len(ids):
-        raise RuntimeError("; ".join(errors))
+            errors.append("%s: %s" % (cid, str(e)[:120]))
+    return sent, errors
+
+def send_message(token, chat_id, text, timeout=10):
+    """chat_id — один ID или несколько через запятую (группа СБ + личные чаты).
+    Ошибка, если не дошло хотя бы одному получателю (кнопка проверки должна это показать)."""
+    sent, errors = send_each(token, chat_id, text, timeout=timeout)
+    if errors:
+        raise RuntimeError(("Дошло: %s. " % ", ".join(sent) if sent else "") + "Не дошло: " + "; ".join(errors))
     return True
 
 def list_chats(token, timeout=10):
@@ -47,8 +56,15 @@ def _send_one(token, chat_id, text, timeout):
     data = urllib.parse.urlencode({"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML",
                                    "disable_web_page_preview": "true"}).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        body = json.loads(r.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:     # причина отказа Telegram — в теле ответа («chat not found», «bot was kicked»)
+        try:
+            desc = json.loads(e.read().decode("utf-8")).get("description")
+        except Exception:
+            desc = None
+        raise RuntimeError(desc or str(e))
     if not body.get("ok"):
         raise RuntimeError(str(body.get("description") or "Telegram отклонил сообщение"))
     return True

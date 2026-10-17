@@ -12,10 +12,20 @@ _PIN_LOCK = threading.Lock()
 mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("application/javascript", ".js")
 
-def make_handler(engine, ui_dir, reports_dir):
+def make_handler(engine, ui_dir, reports_dir, port=8791):
+    hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
+
+        def _foreign(self):
+            """Запрос не с экрана программы. Чужой сайт, открытый в браузере ресепшн (ссылка из письма!), мог бы
+            нажать «Я сообщил в СБ» и выключить сирену или прочитать почту через подмену DNS. Пускаем только
+            запросы на 127.0.0.1/localhost с этим портом; у POST источник (Origin) — сама программа."""
+            if (self.headers.get("Host") or "").lower() not in hosts:
+                return True
+            origin = (self.headers.get("Origin") or "").lower()
+            return bool(origin) and origin not in {"http://" + h for h in hosts}
 
         # ---- helpers ----
         def _json(self, obj, code=200):
@@ -90,6 +100,8 @@ def make_handler(engine, ui_dir, reports_dir):
 
         # ---- GET ----
         def do_GET(self):
+            if self._foreign():
+                return self._json({"error": "forbidden"}, 403)
             try:
                 self._get()
             except Exception as e:
@@ -100,6 +112,10 @@ def make_handler(engine, ui_dir, reports_dir):
                     pass
 
         def do_POST(self):
+            if self._foreign():
+                engine._log("Отклонён запрос не с экрана программы: %s (Origin: %s, Host: %s)" % (
+                    self.path[:60], (self.headers.get("Origin") or "")[:80], (self.headers.get("Host") or "")[:80]))
+                return self._json({"error": "forbidden"}, 403)
             try:
                 self._post()
             except Exception as e:
@@ -208,6 +224,6 @@ class _ExclusiveServer(ThreadingHTTPServer):
         super().server_bind()
 
 def serve(engine, ui_dir, reports_dir, port):
-    srv = _ExclusiveServer(("127.0.0.1", port), make_handler(engine, ui_dir, reports_dir))
+    srv = _ExclusiveServer(("127.0.0.1", port), make_handler(engine, ui_dir, reports_dir, port))
     srv.daemon_threads = True
     return srv

@@ -2,6 +2,7 @@
 """Чтение почты из классического Outlook (COM).
 Ящик ищется в таком порядке: учётная запись с нужным адресом -> хранилище с таким именем ->
 общий ящик (делегирование) -> ящик по умолчанию. Работает с Exchange/Microsoft 365, IMAP и POP."""
+import re
 from datetime import datetime, timedelta
 
 PR_SMTP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F"
@@ -34,6 +35,11 @@ def _dt(v):
 
 def _iso(d):
     return d.strftime("%Y-%m-%dT%H:%M:%S") if d else ""
+
+def _addrs(s):
+    """«a@x.uz, b@x.uz» / «a@x.uz; b@x.uz» / по строкам -> список адресов. Outlook по умолчанию делит адресатов
+    только «;» — с запятой отчёт и письмо в СБ не уходили («Outlook не распознал имена»)."""
+    return [x for x in re.split(r"[;,\s]+", s or "") if x]
 
 def _err(e):
     try:
@@ -741,7 +747,8 @@ class OutlookSource:
         app, ns = self._session()
         item = ns.GetItemFromID(msg["entry_id"])
         f = item.Forward()
-        f.Recipients.Add(to)
+        for a in _addrs(to):
+            f.Recipients.Add(a)
         try:
             f.Recipients.ResolveAll()
         except Exception:
@@ -757,9 +764,9 @@ class OutlookSource:
     def send_mail(self, to, cc, subject, html, inline=None):
         app, ns = self._session()
         m = app.CreateItem(0)
-        m.To = to
-        if cc:
-            m.CC = cc
+        m.To = "; ".join(_addrs(to))
+        if _addrs(cc):
+            m.CC = "; ".join(_addrs(cc))
         for cid, path in (inline or []):
             try:
                 att = m.Attachments.Add(path)
