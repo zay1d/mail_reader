@@ -79,7 +79,7 @@
       <div><label class="f">Telegram: получатели тревоги — ID группы и личных чатов через запятую</label><input id="telegram_chat_id" placeholder="-1001234567890, 123456789"></div>
     </div>
     <p class="help">Личный получатель должен один раз написать боту «/start», группа — добавить бота участником. Затем нажмите <button class="btn-ghost" id="btn-tgchats" style="padding:6px 12px;font-size:13px">Показать, кто написал боту</button> и добавьте нужных. <span id="tg-chats"></span></p>
-    <p class="help">Бота нужно добавить в группу СБ. Это единственный выход программы в интернет: в Telegram уходит только сигнал об угрозе (отправитель, тема, найденные слова, начало текста). <button class="btn-ghost" id="btn-tg" style="padding:6px 12px;font-size:13px">Отправить проверочное сообщение</button> <span id="tg-res"></span></p>
+    <p class="help">Бота нужно добавить в группу СБ. Кроме второго фильтра (ИИ, раздел ниже) это единственный выход программы в интернет: в Telegram уходит только сигнал об угрозе (отправитель, тема, найденные слова, начало текста). <button class="btn-ghost" id="btn-tg" style="padding:6px 12px;font-size:13px">Отправить проверочное сообщение</button> <span id="tg-res"></span></p>
     <label class="f">Явная угроза — КРАСНЫЙ экран (регулярные выражения, по одному в строке; \b — начало слова)</label>
     <textarea id="threat_words" style="min-height:160px"></textarea>
     <label class="f">Исключения: если такая фраза стоит рядом с найденным словом, тревоги нет («взрывной рост», «photo shoot»)</label>
@@ -144,6 +144,29 @@
   </div>
 
   <div class="sect">
+    <h2>Второй фильтр: ИИ (Claude)</h2>
+    <p class="help">Первый фильтр — словарь (ключевые слова направлений и угроз выше) — работает всегда. ИИ читает письмо после словаря и проверяет его вывод. Нет интернета, ключа или ответа ИИ — письмо обрабатывается по словарю, как раньше.</p>
+    <label class="check"><input type="checkbox" id="ai_enabled"> Включить проверку писем ИИ</label>
+    <div class="grid2">
+      <div><label class="f">Ключ Claude API (console.anthropic.com → API Keys)</label><input id="ai_api_key" type="password" autocomplete="off" placeholder="sk-ant-..."></div>
+      <div><label class="f">Модель</label><select id="ai_model">
+        <option value="claude-opus-5-5">Claude Opus 5.5 — самая точная (рекомендуется)</option>
+        <option value="claude-sonnet-5-5">Claude Sonnet 5.5 — средняя цена</option>
+        <option value="claude-haiku-5-5">Claude Haiku 5.5 — самая дешёвая</option>
+      </select></div>
+    </div>
+    <label class="check"><input type="checkbox" id="ai_hide_personal"> Скрывать личные данные перед отправкой в ИИ (имя отправителя, телефоны, адреса почты, номера карт, документов и машин заменяются метками)</label>
+    <p class="help"><b>Направление.</b> Словарь и ИИ назвали одно направление — письмо сразу уходит в отдел. Разошлись — ИИ перечитывает письмо с обоими мнениями; если он уверен, письмо уходит по его решению, если нет — на карточке появляется вопрос «какое направление?», и письмо в отдел не пересылается, пока сотрудник не выберет. Автоответ клиенту уходит в любом случае.<br>
+    <b>Угрозы.</b> ИИ может только поднять тревогу, снять её он не может. Красный экран по словарю остаётся красным (такое письмо в ИИ не отправляется). Словарь ничего не нашёл, а ИИ видит угрозу — жёлтый экран с объяснением ИИ. Жёлтый по словарю, ИИ считает угрозу явной — красный экран и сигнал в СБ. Жёлтый по словарю, ИИ угрозы не видит — экран остаётся жёлтым, мнение ИИ показано рядом.<br>
+    <b>Что уходит в ИИ:</b> тема, текст (до 12 000 знаков) и названия вложений новых писем, которые ждут ответа. Не уходят: рассылки и автописьма, письма коллег своего домена, вложения, адрес отправителя.</p>
+    <p class="help"><button class="btn-ghost" id="btn-ai-test" style="padding:6px 12px;font-size:13px">Проверить связь с ИИ</button> <span id="ai-res" style="margin-left:8px"></span></p>
+    <p class="help"><button class="btn-ghost" id="btn-ai-sent" style="padding:6px 12px;font-size:13px">Показать, что отправлялось в ИИ</button> <span style="margin-left:8px">последние 30 писем с момента запуска программы — в том виде, в каком они ушли</span></p>
+    <div id="ai-sent" hidden style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13px"></div>
+    <label class="f">Слова, которые ИИ предлагает добавить в словарь направлений (письма, где словарь ошибся, а ИИ исправил)</label>
+    <div id="ai-sugg" style="font-size:14px">—</div>
+  </div>
+
+  <div class="sect">
     <h2>Что не считать входящими</h2>
     <div class="grid2">
       <div><label class="f">Отправители, по одному в строке: слово (noreply) — в адресе до «@» или в имени; с «@» или точкой (@shop.uz) — часть всего адреса</label><textarea id="ignore_senders"></textarea></div>
@@ -192,6 +215,10 @@
     ['own_addresses','ignore_senders','ignore_subjects','threat_words','threat_exceptions','threat_soft_words','threat_place_words','threat_time_words','threat_polite_words','staff'].forEach(function(k){$(k).value=(c[k]||[]).join('\n');});
     $('shifts').value=(c.shifts||[]).map(function(s){return s.name+';'+s.start+';'+s.end;}).join('\n');
     $('sound').checked=!!c.sound; $('toast').checked=!!c.toast; $('autostart').checked=c.autostart!==false;
+    // второй фильтр — ИИ
+    $('ai_enabled').checked=!!c.ai_enabled; $('ai_api_key').value=c.ai_api_key||''; $('ai_hide_personal').checked=c.ai_hide_personal!==false;
+    $('ai_model').value=c.ai_model||'claude-opus-5-5'; if(!$('ai_model').value){var o=document.createElement('option');o.value=o.textContent=c.ai_model;$('ai_model').appendChild(o);$('ai_model').value=c.ai_model;}
+    loadSugg();
     // автоответ
     $('auto_reply_enabled').checked=!!c.auto_reply_enabled; $('reception_phone').value=c.reception_phone||'';
     $('forward_removes_from_queue').checked=c.forward_removes_from_queue!==false; $('forward_note').value=c.forward_note||'';
@@ -229,6 +256,7 @@
     v.shifts=lines($('shifts').value).map(function(l){var p=l.split(';');return {name:(p[0]||'').trim(),start:(p[1]||'09:00').trim(),end:(p[2]||'17:00').trim()};}).filter(function(s){return s.name;});
     var badShift=v.shifts.filter(function(s){return !/^\d{1,2}[:.]\d{2}$/.test(s.start)||!/^\d{1,2}[:.]\d{2}$/.test(s.end);})[0];
     if(badShift){alert('Смены: время пишется ЧЧ:ММ через точку с запятой, например «Смена 1;09:00;17:00». Ошибка в строке «'+badShift.name+'».');return;}
+    v.ai_enabled=$('ai_enabled').checked; v.ai_api_key=$('ai_api_key').value.trim(); v.ai_model=$('ai_model').value; v.ai_hide_personal=$('ai_hide_personal').checked;
     v.sound=$('sound').checked; v.toast=$('toast').checked; v.autostart=$('autostart').checked;
     var np=$('admin_pin').value.trim(); if(!/^\d{4,8}$/.test(np)){alert('PIN — от 4 до 8 цифр');return;} v.admin_pin=np;
     fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)}).then(function(r){ if(r.status===403){alert('Сессия настроек истекла, введите PIN заново');location.reload();return;} if(!r.ok){alert('Настройки не сохранены: ошибка программы ('+r.status+'). Подробности — в журнале.');return;} pin=np; try{sessionStorage.setItem('rm_pin',pin);}catch(e){} r.json().then(function(j){ if(j&&typeof j.count_from==='string'){ $('count_from').value=j.count_from; cfg.count_from=j.count_from; } }).catch(function(){}); $('saved').hidden=false;setTimeout(function(){$('saved').hidden=true;},2500);}).catch(function(){alert('Программа не отвечает — настройки не сохранены');});
@@ -238,6 +266,22 @@
   $('btn-diag').onclick=function(){ $('diag').hidden=false; $('diag').textContent='Проверка… (сначала сохраните настройки, если меняли адрес)'; fetch('/api/outlook-diag',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ $('diag').textContent=d.text; }).catch(function(){ $('diag').textContent='Программа не отвечает'; }); };
   $('btn-test').onclick=function(){fetch('/api/test-sound',{method:'POST'});};
   function escH(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  // ---- второй фильтр: ИИ ----
+  function escH(s){return String(s==null?'':s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];});}
+  $('btn-ai-test').onclick=function(){ $('ai-res').textContent='Запрос… (сначала нажмите «Сохранить настройки»)'; fetch('/api/ai-test',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ $('ai-res').textContent=d.ok?('✓ '+d.text):('Ошибка: '+(d.error||'нет ответа')); }).catch(function(){ $('ai-res').textContent='Программа не отвечает'; }); };
+  $('btn-ai-sent').onclick=function(){ var box=$('ai-sent'); if(!box.hidden){box.hidden=true;return;} box.hidden=false; box.textContent='Запрос…';
+    fetch('/api/ai-sent').then(function(r){return r.json();}).then(function(d){ var it=d.items||[]; box.innerHTML=it.length?it.map(function(x){
+      var hid=Object.keys(x.hidden||{}).map(function(k){return k.toLowerCase()+': '+x.hidden[k];}).join(', ');
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div style="color:var(--mut)">'+escH((x.at||'').replace('T',' '))+' · скрыто: '+escH(hid||'ничего')+'</div><pre style="white-space:pre-wrap;margin:4px 0;font:inherit">'+escH(x.sent)+'</pre><div><b>Ответ:</b> '+escH(x.result||'ожидается')+'</div></div>';
+    }).join(''):'С момента запуска программы в ИИ ничего не отправлялось.'; }).catch(function(){ box.textContent='Программа не отвечает'; }); };
+  function loadSugg(){ fetch('/api/ai-suggestions').then(function(r){return r.json();}).then(function(d){ var it=d.items||[]; $('ai-sugg').innerHTML=it.length?it.map(function(x){
+      return '<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)"><span style="flex:1">«<b>'+escH(x.word)+'</b>» → '+escH(x.category_name)+' <span style="color:var(--mut)">· писем: '+x.n+(x.sample?' · например: '+escH(x.sample):'')+'</span></span>'+
+        '<button class="btn-ghost" data-sugg="'+x.id+'" data-act="add" data-cat="'+escH(x.category)+'" data-word="'+escH(x.word)+'" style="padding:5px 10px;font-size:13px">Добавить</button><button class="btn-ghost" data-sugg="'+x.id+'" data-act="reject" style="padding:5px 10px;font-size:13px">Отклонить</button></div>';
+    }).join(''):'Пока предложений нет.'; }).catch(function(){}); }
+  $('ai-sugg').addEventListener('click',function(e){ var b=e.target.closest('button[data-sugg]'); if(!b)return; b.disabled=true;
+    fetch('/api/ai-suggestion',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:parseInt(b.dataset.sugg,10),action:b.dataset.act})}).then(function(r){return r.json();}).then(function(d){
+      if(d.ok&&b.dataset.act==='add'){ var x=findCat(b.dataset.cat); if(x){ x.words=x.words||[]; if(x.words.indexOf(b.dataset.word)<0)x.words.push(b.dataset.word); if(curCat===x)$('cat_words').value=x.words.join('\n'); } }
+      loadSugg(); }).catch(function(){ b.disabled=false; }); });
   $('btn-tgchats').onclick=function(){ $('tg-chats').textContent='Запрос… (токен должен быть сохранён)'; fetch('/api/telegram-chats',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ if(!d.ok){$('tg-chats').textContent='Ошибка: '+(d.error||'');return;} if(!d.chats.length){$('tg-chats').textContent='Пока никто не писал боту.';return;} $('tg-chats').innerHTML=d.chats.map(function(c){return '<button class="btn-ghost" style="padding:4px 10px;font-size:13px;margin:3px" data-cid="'+escH(c.chat_id)+'">+ '+escH(c.name)+' ('+(c.type==='private'?'личный':escH(c.type))+', '+escH(c.chat_id)+')</button>';}).join(''); Array.prototype.forEach.call($('tg-chats').querySelectorAll('button'),function(b){b.onclick=function(){var v=$('telegram_chat_id').value.trim(); var ids=v?v.split(',').map(function(x){return x.trim();}):[]; if(ids.indexOf(b.dataset.cid)<0) ids.push(b.dataset.cid); $('telegram_chat_id').value=ids.join(', ');};}); }); };
   $('btn-tg').onclick=function(){ $('tg-res').textContent='Отправка… (сначала нажмите «Сохранить настройки»)'; fetch('/api/test-telegram',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ $('tg-res').textContent=d.ok?'Отправлено, проверьте группу':'Ошибка: '+(d.error||''); $('tg-res').style.color=d.ok?'var(--green)':'var(--red)'; }); };
   $('btn-log').onclick=function(){fetch('/api/log').then(function(r){return r.json();}).then(function(d){$('log').textContent=(d.log||[]).join('\n')||'Журнал пуст';$('log').hidden=false;$('log').scrollTop=$('log').scrollHeight;});};

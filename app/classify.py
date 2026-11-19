@@ -123,6 +123,27 @@ def categorize(subject: str, body: str, categories: list, is_threat: bool) -> st
             best, best_score = c.get("key"), sc
     return best or "general"
 
+def explain(subject: str, body: str, categories: list, key: str) -> list:
+    """Слова словаря направления key, найденные в письме (для объяснения, почему словарь выбрал направление)."""
+    text = ((subject or "") + "\n" + (body or "")).lower()
+    subj = (subject or "").lower()
+    out = []
+    for c in categories or []:
+        if c.get("key") != key:
+            continue
+        name = (c.get("name") or "").strip().lower()
+        if name and key not in ("general", "security"):
+            stem = name.split()[0]
+            stem = stem[:-1] if len(stem) > 5 else stem
+            if stem and _hit(stem, subj):
+                out.append("в теме: " + stem)
+        for w in c.get("words") or []:
+            w = (w or "").lower()
+            w = w if w.endswith(" ") else w.strip()
+            if w.strip() and _hit(w, text) and w.strip() not in out:
+                out.append(w.strip())
+    return out
+
 def prioritize(subject: str, body: str, sender: str, importance_high: bool, rules: dict, category: str) -> int:
     """1 — срочно, 2 — обычно, 3 — низкий."""
     text = ((subject or "") + "\n" + (body or "")).lower()

@@ -119,6 +119,13 @@ DEFAULTS = {
     "auto_reply_backlog_hours": 16,   # при запуске отвечать/пересылать письма, пришедшие за последние N часов
     "staff": [],                          # сотрудники ресепшн (Настройки → Смены)
     "forward_removes_from_queue": True,   # пересланное в отдел письмо снимается с очереди ресепшн
+    # второй фильтр — ИИ (Claude API): проверяет направление письма и угрозу после словаря
+    "ai_enabled": False,
+    "ai_api_key": "",                     # ключ Claude API (console.anthropic.com)
+    "ai_model": "claude-opus-5-5",
+    "ai_effort": "low",                   # глубина разбора: low | medium | high
+    "ai_hide_personal": True,             # перед отправкой в ИИ заменять личные данные метками
+    "ai_wait_seconds": 180,               # сколько ждать ответа ИИ, прежде чем обработать письмо по словарю
     "forward_note": "Переслано с почты ресепшн Tashkent City Mall. Направление: {category}. Просьба ответить отправителю напрямую.",
 }
 
@@ -195,7 +202,8 @@ def _write(cfg):
     os.replace(tmp, CONFIG_PATH)
 
 _INT_KEYS = {"port": (1, 65535), "poll_seconds": (5, 3600), "lookback_days": (1, 60), "repeat_alert_minutes": (1, 1440),
-             "sla_warn_minutes": (1, 100000), "sla_overdue_minutes": (1, 100000), "auto_reply_backlog_hours": (1, 720)}
+             "sla_warn_minutes": (1, 100000), "sla_overdue_minutes": (1, 100000), "auto_reply_backlog_hours": (1, 720),
+             "ai_wait_seconds": (30, 3600)}
 
 def _sanitize(cfg):
     """Значения не того вида (ручная правка config.json: «20 сек», пусто, строка вместо списка) заменяются

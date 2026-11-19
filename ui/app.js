@@ -29,7 +29,7 @@
     if (!state) return;
     var c = state.counts, cfg = state.cfg, pn = cfg.priority_names;
     var st = $('status'); st.className = 'status ' + (state.status === 'ok' ? 'ok' : state.status === 'demo' ? 'demo' : state.status === 'error' ? 'error' : '');
-    $('status-text').textContent = state.status_text || '';
+    $('status-text').textContent = (state.status_text || '') + (state.ai && state.ai.state === 'error' ? ' · ' + state.ai.text : '');
     if (state.version) $('status-text').title = 'Версия программы ' + state.version;
     $('demo-bar').hidden = state.mode !== 'demo';
     // смена в шапке — та, которую открыли сотрудники; по часам она не меняется
@@ -64,7 +64,7 @@
     var items = state.queue.filter(function (m) { return !catFilter || (m.category || 'general') === catFilter; });
     $('empty').hidden = items.length > 0;
     $('empty-t').textContent = catFilter && c.queue ? 'В этом направлении всё отвечено' : '✓ Все письма отвечены';
-    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : ''); }).join(';');
+    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : '') + '|' + (m.category || '') + '|' + (m.ai_state || '') + (m.cat_conflict || '') + '|' + (m.ai_note || '').length + '|' + (m.threat_words || []).length; }).join(';');
     if (q.dataset.sig !== sig) {
       q.dataset.sig = sig; q.innerHTML = '';
       items.forEach(function (m) {
@@ -76,11 +76,12 @@
           (m.priority === 1 ? '<span class="pri p1">' + esc(pn['1']) + '</span>' : m.priority === 3 ? '<span class="pri p3">' + esc(pn['3']) + '</span>' : '') +
           esc(m.sender_name || m.sender) + (m.sender && m.sender_name && m.sender.toLowerCase() !== m.sender_name.toLowerCase() ? '<span class="addr">' + esc(m.sender) + '</span>' : '') +
           '<span class="tag cat">' + esc(m.category_name) + '</span>' +
+          (m.ai_state === 'pending' ? '<span class="tag">ИИ проверяет…</span>' : '') +
           (m.thread_count > 1 ? '<span class="tag thr">переписка: ' + m.thread_count + ' письма</span>' : '') +
           (m.junk ? '<span class="tag orange">из «Нежелательной почты» — проверьте: настоящее → в Outlook «Не нежелательное», спам → удалить</span>' : '') + (m.night ? '<span class="tag">ночное · срок с ' + ft(m.sla_from) + '</span>' : '') + (m.carried ? '<span class="tag">с прошлой смены</span>' : '') + (m.threat_words && m.threat_words.length ? ((m.threat_level || 2) === 2 ? '<span class="tag red">угроза</span>' : '<span class="tag orange">' + (m.threat_ack_at ? 'проверено, угрозы нет' : 'проверить') + '</span>') : '') + '</div>' +
           '<div class="subj">' + esc(m.subject || '(без темы)') + '</div>' +
           '<div class="prev">' + esc(m.body_preview || '') + '</div>' +
-          (att ? '<div class="atts">' + att + '</div>' : '') + clientNote(m) +
+          (att ? '<div class="atts">' + att + '</div>' : '') + clientNote(m) + aiNote(m) +
           '<div class="meta">Получено ' + fdt(m.received_at) + (m.auto_replied_at ? ' · <span class="auto">автоответ отправлен ' + ft(m.auto_replied_at) + '</span>' : '') + '</div></div>' +
           '<div class="acts"><button class="btn-primary" data-act="open">Ответить в Outlook</button></div>';
         q.appendChild(el);
@@ -141,6 +142,16 @@
       h += '<div class="note warn">Заявка с сайта: «Ответить» в Outlook уйдёт на наш же ящик, а адрес клиента в тексте не найден. Посмотрите письмо: e-mail или телефон клиента — в тексте заявки.</div>';
     }
     return h;
+  }
+
+  // второй фильтр (ИИ): спор о направлении решает сотрудник; исправление словаря показано строкой
+  function aiNote(m) {
+    if (m.cat_conflict) {
+      return '<div class="note warn"><b>Какое направление?</b> ' + esc(m.ai_note || '') + '. Письмо не пересылается в отдел, пока вы не выберете: ' +
+        '<button class="btn-cat" data-setcat="' + esc(m.category) + '">' + esc(m.category_name) + '</button> ' +
+        '<button class="btn-cat" data-setcat="' + esc(m.cat_conflict) + '">' + esc(m.cat_conflict_name || m.cat_conflict) + '</button></div>';
+    }
+    return m.ai_note ? '<div class="note ai">' + esc(m.ai_note) + '</div>' : '';
   }
 
   // письмо в панели под пилюлями: что с ним стало
@@ -234,12 +245,15 @@
     var m = th[0];
     $('th-mail').innerHTML = '<div><b>От:</b> ' + esc(m.sender_name || '') + ' &lt;' + esc(m.sender || '') + '&gt; · <b>Получено:</b> ' + fdt(m.received_at) + '</div>' +
       '<div><b>Тема:</b> ' + esc(m.subject) + '</div><div style="margin-top:6px"><b>Найдено:</b> ' + (m.threat_words || []).map(function (w) { return '<span class="w">' + esc(w) + '</span>'; }).join('') + '</div>' +
+      (m.ai_threat_note ? '<div style="margin-top:6px"><b>Второй фильтр:</b> ' + esc(m.ai_threat_note) + '</div>' : '') +
       '<div class="prev">' + esc(m.body_preview || '') + '</div>' + (th.length > 1 ? '<div style="margin-top:8px;color:var(--red)"><b>Ещё сигналов: ' + (th.length - 1) + '</b></div>' : '');
     $('th-phone').textContent = state.cfg.security_phone || 'по внутреннему телефону';
     var red = (m.threat_level || 2) === 2;
     $('threat').className = 'threat' + (red ? '' : ' yellow');
     $('th-title').textContent = red ? '⚠ ВНИМАНИЕ! УГРОЗА' : '⚠ ВОЗМОЖНАЯ УГРОЗА';
-    $('th-sub').textContent = red ? 'В письме найдены слова, указывающие на угрозу посетителям и торговому центру' : 'Проверьте письмо: найдены слова, похожие на угрозу или запугивание';
+    var byAi = (m.threat_words || []).length && (m.threat_words || []).every(function (w) { return w.indexOf('ИИ: ') === 0; });
+    $('th-sub').textContent = red ? 'В письме найдены слова, указывающие на угрозу посетителям и торговому центру' :
+      (byAi ? 'Проверьте письмо: словарь ничего не нашёл, но ИИ считает письмо похожим на угрозу' : 'Проверьте письмо: найдены слова, похожие на угрозу или запугивание');
     $('th-steps-red').hidden = !red; $('th-btns-red').hidden = !red || !$('th-confirm').hidden;   // подтверждение стоит на месте кнопок
     $('th-steps-yellow').hidden = red; $('th-btns-yellow').hidden = red;
     if (red !== ($('threat').dataset.level === '2')) hide('th-confirm');
@@ -287,6 +301,11 @@
       return;
     }
     var card = b.closest('.card');
+    if (card && b.dataset.setcat) {
+      b.disabled = true;
+      api('/api/set-category', { id: card.dataset.id, category: b.dataset.setcat }).then(function (r) { toast(r.ok ? 'Направление выбрано' : 'Не получилось — обновите страницу'); poll(); });
+      return;
+    }
     if (card && b.dataset.act === 'open') {
       if (state.mode === 'demo') { toast('Демо-режим: письмо открылось бы в Outlook. Нажмите «Ответить на первое» в жёлтой панели.'); return; }
       api('/api/open', { id: card.dataset.id }).then(function (r) { if (!r.ok) toast('Не удалось открыть письмо в Outlook. Откройте его вручную.'); });

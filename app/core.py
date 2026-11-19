@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """Ядро: опрос почты, сопоставление ответов, категории, приоритеты, автоответ,
 угрозы, напоминания, смены."""
-import os, threading, time, traceback, webbrowser, html
+import os, threading, time, traceback, webbrowser, html, queue, collections
 from datetime import datetime, timedelta
 
-import config, notify, threats, matcher, shifts, classify, telegram, autostart
+import config, notify, threats, matcher, shifts, classify, telegram, autostart, ai
 from store import Store, open_checked
 
-VERSION = "1.36"
+VERSION = "1.37"
 DEMO_FORWARD = "marketing-demo@example.uz"    # адрес пересылки демо-кнопки; в режиме Outlook на него ничего не уходит
 # метки нашего письма-сигнала в СБ; письмо с [0] в теме вернулось в ящик ресепшн (автоответ, группа, пересылка) — без тревоги
 SB_MARKS = ("УГРОЗА: письмо на почту ресепшн", "Сработал сигнал угрозы в почте ресепшн")
@@ -62,6 +62,16 @@ class Engine:
         self.pinned_hwnd = 0          # окно тревоги, закреплённое поверх всех окон (красный сигнал)
         self.pin_pause_until = 0      # «Открыть письмо в Outlook» на красном экране — открепить на 90 с
         self.heartbeat = time.time()  # когда цикл опроса в последний раз подавал признаки жизни
+        # второй фильтр — ИИ: письма ждут его ответа в отдельном потоке, опрос почты и тревоги не задерживаются
+        self.ai = ai.Analyzer(lambda: self.cfg)
+        self.ai_queue = queue.Queue()
+        self.ai_jobs = {}             # id письма -> задание (письмо с текстом), пока ИИ не ответил
+        self.ai_ready = []            # письма, по которым ИИ ответил: догнать пересылку и автоответ
+        self.ai_lock = threading.Lock()
+        self.ai_thread = None
+        self.ai_fail = {"n": 0, "until": 0, "msg": ""}     # сбои подряд; пауза, во время которой работает только словарь
+        self.ai_last_ok = None
+        self.ai_log = collections.deque(maxlen=30)          # что уходило в ИИ (для Настроек), только в памяти
         self.stall_warned = 0         # когда в последний раз был сигнал «почта не проверяется»
         self.url = "http://127.0.0.1:%d/" % int(self.cfg.get("port") or 8791)
         self._reload_patterns()
@@ -449,6 +459,8 @@ class Engine:
             if rec and (_p(rec.get("received_at")) or datetime.now()) >= backlog:
                 fresh.append(rec)
         fresh += rescued               # из «Нежелательной» во «Входящие» — обрабатываются при любом возрасте
+        by_id = {m["id"]: m for m in incoming}
+        fresh += self._ai_collect(by_id, {m["id"] for m in fresh})   # ИИ ответил (или не дождались) — догнать
         have = {m["id"] for m in fresh}
         for mid in {k[1] for k in self.retry} - have:    # в прошлый опрос Outlook не отправил (был занят) — повторить
             rec = self.store.get(mid)
@@ -458,6 +470,8 @@ class Engine:
         for m in fresh:               # сначала направление и пересылка в отдел, затем автоответ (уходит всем)
             self.heartbeat = time.time()
             try:
+                if self._ai_hold(m, by_id):      # письмо ждёт второго фильтра (ИИ): пересылка и автоответ — после него
+                    continue
                 self._auto_forward(m)
                 self._auto_reply(m)
             except Exception as e:
@@ -642,6 +656,11 @@ class Engine:
         tries = self.retry.pop(("forward", m["id"]), 0)
         rec = self.store.get(m["id"])
         if not rec or rec.get("ignored") or self._threat_blocks(rec) or rec.get("forwarded_at") or rec.get("answered_at") or rec.get("junk"):
+            return
+        if rec.get("cat_conflict"):
+            self._log("Письмо «%s»: словарь и ИИ разошлись в направлении («%s» или «%s») — в отдел не пересылается, "
+                      "направление выбирает сотрудник на карточке" % (rec.get("subject"), self.cat_name(rec.get("category")),
+                                                                    self.cat_name(rec.get("cat_conflict"))))
             return
         own = self._own()
         sender = (rec.get("sender") or "").lower()
@@ -877,6 +896,279 @@ class Engine:
             last_tick = time.time()       # сон компьютера меряем по паузе между кругами: долгий опрос — не «сон»
             time.sleep(2)
 
+    # ---------- второй фильтр: ИИ ----------
+    def _ai_paused(self):
+        return time.time() < self.ai_fail["until"]
+
+    def ai_status(self):
+        """Для экрана: включён ли ИИ и работает ли он."""
+        c = self.cfg
+        if not c.get("ai_enabled"):
+            return {"on": False, "state": "off", "text": "", "sdk": ai.sdk_ok()}
+        why = self.ai.why_off()
+        if why:
+            return {"on": True, "state": "error", "text": "ИИ не работает: %s. Письма разбирает словарь." % why, "sdk": ai.sdk_ok()}
+        if self._ai_paused():
+            return {"on": True, "state": "error", "sdk": True,
+                    "text": "ИИ временно не отвечает (%s). Письма разбирает словарь; следующая попытка в %s."
+                            % (self.ai_fail["msg"], datetime.fromtimestamp(self.ai_fail["until"]).strftime("%H:%M"))}
+        return {"on": True, "state": "ok", "text": "ИИ проверяет направление писем и угрозы", "sdk": True,
+                "pending": len(self.ai_jobs)}
+
+    def _ai_wants(self, rec):
+        """Отправлять ли письмо на второй фильтр. Явная угроза по словарю (красный экран) в ИИ не уходит: тревога
+        уже поднята, и снять её ИИ не может. Письма коллег своего домена не отправляются (внутренняя переписка)."""
+        if not rec or rec.get("kind") != "in" or rec.get("ignored") or rec.get("ai_state") or rec.get("answered_at"):
+            return False
+        if (rec.get("threat_level") or 0) == 2 or rec.get("threat_ack_at") or rec.get("no_reply_reason"):
+            return False
+        if not self.ai.enabled() or self._ai_paused():
+            return False
+        s = (rec.get("sender") or "").lower()
+        own_dom = {a.split("@", 1)[1] for a in self._own()}
+        if "@" in s and s.split("@", 1)[1] in own_dom:
+            return False
+        return True
+
+    def _ai_hold(self, m, by_id):
+        """True — письмо отправлено (или уже ждёт) на второй фильтр: пересылка и автоответ откладываются."""
+        rec = self.store.get(m["id"])
+        if not rec:
+            return False
+        if rec.get("ai_state") == "pending":
+            return True
+        if not self._ai_wants(rec):
+            return False
+        self._ai_submit(rec, by_id.get(rec["id"]) or m)
+        return True
+
+    def _ai_submit(self, rec, full):
+        """full — письмо с полным текстом (из опроса Outlook); нет — в ИИ уйдёт начало письма из базы."""
+        job = {"id": rec["id"], "t0": time.time(), "subject": rec.get("subject") or "",
+               "body": (full or {}).get("body") or rec.get("body_preview") or "",
+               "attachments": rec.get("attachments") or [], "sender": rec.get("sender") or "",
+               "names": [x for x in (rec.get("sender_name"), rec.get("client_name")) if x],
+               "importance_high": bool((full or {}).get("importance_high"))}
+        self.ai_jobs[rec["id"]] = job
+        self.store.set_fields(rec["id"], ai_state="pending", rule_category=rec.get("category") or "general")
+        self.ai_queue.put(job)
+        if self.ai_thread is None or not self.ai_thread.is_alive():
+            self.ai_thread = threading.Thread(target=self._ai_worker, daemon=True)
+            self.ai_thread.start()
+
+    def _ai_collect(self, by_id, have):
+        """Письма, которым пора догнать пересылку и автоответ: ИИ ответил; ИИ не ответил за отведённое время;
+        задание потерялось (программу перезапустили) — такое письмо отправляется в ИИ заново."""
+        out = []
+        with self.ai_lock:
+            ready, self.ai_ready = self.ai_ready, []
+        wait = int(self.cfg.get("ai_wait_seconds") or 180)
+        now = time.time()
+        for rec in self.store.ai_pending():
+            job = self.ai_jobs.get(rec["id"])
+            if job is None:
+                if self.ai.enabled() and not self._ai_paused() and rec["id"] in by_id:
+                    self._ai_submit(dict(rec, ai_state=None), by_id[rec["id"]])
+                    continue
+            elif now - job["t0"] < wait:
+                continue
+            # не дождались ИИ — письмо обрабатывается по словарю
+            self.ai_jobs.pop(rec["id"], None)
+            self.store.set_fields(rec["id"], ai_state="failed", ai_note="", ai_at=_iso(datetime.now()))
+            self._log("Письмо «%s»: ИИ не ответил вовремя — обработано по словарю" % (rec.get("subject") or ""))
+            ready.append(rec["id"])
+        for mid in dict.fromkeys(ready):
+            if mid in have:
+                continue
+            rec = self.store.get(mid)
+            if rec:
+                out.append(rec)
+        return out
+
+    def _ai_worker(self):
+        while not self.stop:
+            try:
+                job = self.ai_queue.get(timeout=5)
+            except queue.Empty:
+                continue
+            try:
+                if self.ai_jobs.get(job["id"]) is job:       # задание не снято по времени
+                    self._ai_run(job)
+            except Exception:
+                self._log("Сбой второго фильтра (ИИ): " + traceback.format_exc()[-400:])
+                try:
+                    self.store.set_fields(job["id"], ai_state="failed", ai_at=_iso(datetime.now()))
+                except Exception:
+                    pass
+            finally:
+                if self.ai_jobs.get(job["id"]) is job:
+                    self.ai_jobs.pop(job["id"], None)
+                with self.ai_lock:
+                    self.ai_ready.append(job["id"])
+                self.poll_now = True
+
+    def _ai_failed(self, e):
+        f = self.ai_fail
+        f["n"] += 1
+        f["msg"] = str(e)[:120]
+        if e.kind in ("key", "off") or f["n"] >= 3:
+            f["until"] = time.time() + (600 if e.kind == "key" else 300)
+            f["n"] = 0
+            self._log("ВНИМАНИЕ: ИИ не работает (%s) — письма разбирает только словарь; повторная попытка через %d мин"
+                      % (f["msg"], 10 if e.kind == "key" else 5))
+
+    def _ai_run(self, job):
+        mid = job["id"]
+        text, masker = self.ai.prepare(job["subject"], job["body"], job["attachments"], job["names"])
+        entry = {"at": _iso(datetime.now()), "sent": text, "hidden": masker.counts(), "result": ""}
+        self.ai_log.append(entry)
+        rec = self.store.get(mid)
+        if not rec:
+            return
+        rule_cat = rec.get("rule_category") or rec.get("category") or "general"
+        try:
+            v = self.ai.analyze(text)
+        except ai.AIError as e:
+            entry["result"] = "нет ответа: " + str(e)
+            if e.kind == "refusal":
+                # модель отказалась разбирать письмо из-за его содержания — это само по себе повод показать письмо человеку
+                self._ai_threat(mid, job, "possible", "ИИ отказался разбирать это письмо из-за его содержания — прочитайте письмо")
+                self.store.set_fields(mid, ai_state="done", ai_threat="possible", ai_at=_iso(datetime.now()))
+                return
+            self._ai_failed(e)
+            self.store.set_fields(mid, ai_state="failed", ai_at=_iso(datetime.now()))
+            self._log("Письмо «%s»: ИИ не ответил (%s) — обработано по словарю" % (job["subject"], str(e)[:160]))
+            return
+        self.ai_fail["n"] = 0
+        self.ai_last_ok = datetime.now()
+        fields = {"ai_state": "done", "ai_at": _iso(datetime.now()), "ai_threat": v["threat"], "ai_conf": v["confidence"]}
+        # --- угроза: срабатывает тот фильтр, который увидел больше опасности; снять тревогу словаря ИИ не может
+        level = self._ai_threat(mid, job, v["threat"], masker.unmask(v["threat_reason"]))
+        if self.ai_jobs.get(mid) is not job:
+            # ответ опоздал: письмо уже обработано по словарю (переслано, автоответ ушёл) — направление не трогаем,
+            # но угрозу, которую увидел ИИ, показываем и с опозданием
+            entry["result"] = "ответ опоздал; угроза: %s" % v["threat"]
+            return
+        if v["threat"] == "none" and level == 1:
+            fields["ai_threat_note"] = "ИИ считает, что угрозы нет" + ((": " + masker.unmask(v["threat_reason"])) if v["threat_reason"] else "")
+        # --- направление: совпало со словарём — готово; разошлось — ИИ перепроверяет с обоими мнениями
+        ai_cat, conf, reason = v["category"], v["confidence"], masker.unmask(v["category_reason"]).rstrip(" .")
+        final, conflict, note = rule_cat, None, ""
+        if level == 2:
+            ai_cat = final = "security"
+        elif ai_cat != rule_cat:
+            words = classify.explain(job["subject"], job["body"], self.cfg.get("categories"), rule_cat)
+            try:
+                r = self.ai.recheck(text, rule_cat, words, ai_cat, v["category_reason"])
+                final, conf, reason = r["category"], r["confidence"], masker.unmask(r["reason"]).rstrip(" .")
+            except ai.AIError as e:
+                self._ai_failed(e)
+                final, conf = ai_cat, "low"
+            entry["result"] = "словарь: %s; ИИ: %s; после перепроверки: %s (%s)" % (rule_cat, ai_cat, final, conf)
+            if final == rule_cat:
+                note = "ИИ сначала предложил «%s», после перепроверки согласился со словарём" % self.cat_name(ai_cat)
+            elif conf != "high" and self.forward_addr(final) != self.forward_addr(rule_cat):
+                # уверенности нет, а от направления зависит пересылка — решает сотрудник
+                conflict, note = final, ("Словарь: «%s», ИИ: «%s»%s"
+                                         % (self.cat_name(rule_cat), self.cat_name(final), (" — " + reason) if reason else ""))
+                final = rule_cat
+            else:
+                note = "ИИ: направление «%s» вместо «%s» по словарю%s" % (
+                    self.cat_name(final), self.cat_name(rule_cat), (" — " + reason) if reason else "")
+                self._ai_suggest(final, v.get("keywords"), job)
+        fields.update(ai_category=conflict or final, ai_note=note, cat_conflict=conflict, category=final)
+        if not entry["result"]:
+            entry["result"] = "направление: %s (%s); угроза: %s" % (v["category"], v["confidence"], v["threat"])
+        if final != (rec.get("category") or "general") and level == 0:
+            fields["priority"] = classify.prioritize(job["subject"], job["body"], job["sender"], job["importance_high"],
+                                                     self.cfg.get("priority") or {}, final)
+        self.store.set_fields(mid, **fields)
+        if note:
+            self._log("Письмо «%s»: %s" % (job["subject"], note))
+
+    def _ai_threat(self, mid, job, threat, reason):
+        """Применить мнение ИИ об угрозе. Возвращает итоговый уровень (0, 1, 2)."""
+        rec = self.store.get(mid) or {}
+        level = rec.get("threat_level") or 0
+        if threat == "none" or rec.get("threat_ack_at"):
+            return level
+        mark = "ИИ: " + (reason or ("явная угроза" if threat == "explicit" else "возможная угроза"))
+        words = [w for w in (rec.get("threat_words") or []) if not w.startswith("ИИ: ")] + [mark]
+        if level == 0:
+            # словарь ничего не нашёл, ИИ видит угрозу — жёлтый экран: письмо читает сотрудник
+            self.store.set_fields(mid, threat_level=1, threat_words=words, priority=1)
+            self._log("ВОЗМОЖНАЯ УГРОЗА (ИИ): %s | %s | %s" % (job["sender"], job["subject"], reason))
+            return 1
+        if level == 1 and threat == "explicit":
+            # словарь — «возможная», ИИ — «явная»: красный экран, сигнал в СБ
+            self.store.set_fields(mid, threat_level=2, threat_words=words, priority=1, category="security")
+            self.threat_opened.discard(mid)
+            self._log("УГРОЗА (словарь: возможная, ИИ: явная): %s | %s | %s" % (job["sender"], job["subject"], reason))
+            return 2
+        self.store.set_fields(mid, threat_words=words)
+        return level
+
+    def _ai_suggest(self, category, keywords, job):
+        """ИИ исправил направление: слова письма, по которым это видно, предлагаются в словарь (решает администратор)."""
+        text = (job["subject"] + "\n" + job["body"]).lower()
+        have = []
+        for c in self.cfg.get("categories") or []:
+            if c.get("key") == category:
+                have = [(w or "").strip().lower() for w in c.get("words") or []]
+        for k in keywords or []:
+            k = " ".join(str(k).lower().split())
+            if not 4 <= len(k) <= 40 or len(k.split()) > 3 or any(ch.isdigit() or ch in "[]@" for ch in k):
+                continue
+            if k not in text or any(w and (k.startswith(w) or w in k.split()) for w in have):
+                continue
+            try:
+                self.store.suggest_add(category, k, job["subject"])
+            except Exception:
+                pass
+
+    def set_category(self, mid, key):
+        """Сотрудник выбрал направление письма, в котором словарь и ИИ разошлись."""
+        rec = self.store.get(mid)
+        if not rec or key not in [c.get("key") for c in self.cfg.get("categories") or []]:
+            return False
+        self.store.set_fields(mid, category=key, cat_conflict=None,
+                              ai_note="Направление выбрано сотрудником: «%s»" % self.cat_name(key))
+        self._log("Письмо «%s»: направление «%s» выбрано сотрудником" % (rec.get("subject"), self.cat_name(key)))
+        with self.ai_lock:
+            self.ai_ready.append(mid)
+        self.poll_now = True
+        return True
+
+    def ai_test(self):
+        return self.ai.test()
+
+    def ai_sent(self):
+        """Что уходило в ИИ (последние письма, после скрытия личных данных) — для Настроек."""
+        return list(self.ai_log)[::-1]
+
+    def ai_suggestions(self):
+        out = self.store.suggestions()
+        for s in out:
+            s["category_name"] = self.cat_name(s["category"])
+        return out
+
+    def ai_suggestion(self, sid, action):
+        """«Добавить» — слово дописывается в словарь направления; «Отклонить» — больше не предлагается."""
+        s = self.store.suggestion(sid)
+        if not s or s.get("state"):
+            return False
+        if action == "add":
+            cats = self.cfg.get("categories") or []
+            for c in cats:
+                if c.get("key") == s["category"] and s["word"] not in (c.get("words") or []):
+                    c.setdefault("words", []).append(s["word"])
+            self.cfg = config.save({"categories": cats})
+            self.store.suggest_set(sid, "added")
+            self._log("Слово «%s» добавлено в словарь направления «%s» (предложено ИИ)" % (s["word"], self.cat_name(s["category"])))
+        else:
+            self.store.suggest_set(sid, "rejected")
+        return True
+
     # ---------- сторож зависшего опроса ----------
     STALL_WARN, STALL_RESTART = 180, 300          # секунд без признаков жизни: сигнал / перезапуск программы
 
@@ -912,8 +1204,11 @@ class Engine:
         keys = ("id", "sender", "sender_name", "subject", "body_preview", "received_at", "answered_at",
                 "threat_words", "threat_ack_at", "threat_level", "shift_key", "lang", "category", "priority", "auto_replied_at", "attachments",
                 "forwarded_to", "forwarded_at", "junk", "no_reply_reason", "ignored", "client_email", "client_name",
-                "reply_self", "self_reply_at", "self_reply_to", "unignored_at", "no_reply_at")
+                "reply_self", "self_reply_at", "self_reply_to", "unignored_at", "no_reply_at",
+                "ai_state", "ai_category", "ai_conf", "ai_threat", "ai_note", "ai_threat_note", "rule_category", "cat_conflict")
         d = {k: m.get(k) for k in keys}
+        if m.get("cat_conflict"):
+            d["cat_conflict_name"] = self.cat_name(m.get("cat_conflict"))
         d["can_open"] = bool(m.get("entry_id")) and self.cfg.get("mode") == "outlook"
         d["sla"] = self.sla_for(m.get("priority"))
         d["category_name"] = self.cat_name(m.get("category"))
@@ -1011,6 +1306,7 @@ class Engine:
             "closed": [self._pub(m, conv, True) for m in closed],
             "threats": [self._pub(m) for m in self.store.threats_pending()],
             "session": self._session_pub(),
+            "ai": self.ai_status(),
             "staff": list(self.cfg.get("staff") or []) or (["Рахимова Дильноза", "Каримов Азиз", "Юсупова Малика", "Алимов Сардор"] if self.cfg.get("mode") == "demo" else []),
             "cfg": {"security_phone": self.cfg.get("security_phone") or "",
                     "manager_email": self.cfg.get("manager_email") or "",

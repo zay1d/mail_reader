@@ -25,11 +25,14 @@ jobs:
       - name: Зависимости сборки
         run: pip install -r build_tools/requirements.txt
 
+      - name: Версии библиотек
+        run: pip list --format=freeze | findstr /i "anthropic httpx pydantic pyinstaller pywin32"
+
       - name: Тесты
         run: python -m unittest discover -s tests
 
       - name: Сборка ReceptionMail.exe
-        run: pyinstaller --noconfirm --clean --onefile --noconsole --name ReceptionMail --paths app --distpath build_out --workpath build_tmp --specpath build_tmp app/main.py
+        run: pyinstaller --noconfirm --clean --onefile --noconsole --name ReceptionMail --paths app --collect-submodules anthropic --copy-metadata anthropic --distpath build_out --workpath build_tmp --specpath build_tmp app/main.py
 
       - name: Папки установки и обновления
         shell: bash

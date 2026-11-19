@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   closed_at TEXT,
   closed_by TEXT
 );
+CREATE TABLE IF NOT EXISTS ai_suggest (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT,
+  word TEXT,
+  n INTEGER,                -- в скольких письмах встретилось
+  sample TEXT,              -- тема последнего такого письма
+  state TEXT,               -- NULL (ждёт решения) | added | rejected
+  updated_at TEXT,
+  UNIQUE(category, word)
+);
 CREATE TABLE IF NOT EXISTS shifts (
   key TEXT PRIMARY KEY,
   name TEXT,
@@ -53,7 +63,10 @@ CREATE TABLE IF NOT EXISTS shifts (
 """
 _NEW_COLS = {"lang": "TEXT", "category": "TEXT", "priority": "INTEGER", "auto_replied_at": "TEXT", "attachments": "TEXT", "threat_level": "INTEGER", "forwarded_to": "TEXT", "forwarded_at": "TEXT", "last_seen": "TEXT", "junk": "INTEGER",
             "reply_to": "TEXT", "client_email": "TEXT", "client_name": "TEXT", "reply_self": "INTEGER",
-            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT"}
+            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT",
+            # второй фильтр (ИИ): состояние (pending | done | failed), мнение ИИ и исходное мнение словаря
+            "ai_state": "TEXT", "ai_category": "TEXT", "ai_conf": "TEXT", "ai_threat": "TEXT", "ai_note": "TEXT",
+            "ai_threat_note": "TEXT", "ai_at": "TEXT", "rule_category": "TEXT", "cat_conflict": "TEXT"}
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -280,6 +293,52 @@ class Store:
                  m.get("subject"), m.get("sent_at"), now_iso(), ignored))
             self.con.commit()
             return True
+
+    _AI_COLS = ("ai_state", "ai_category", "ai_conf", "ai_threat", "ai_note", "ai_threat_note", "ai_at", "rule_category",
+                "cat_conflict", "category", "priority", "threat_level", "threat_words")
+
+    def set_fields(self, mid, **kw):
+        """Обновить поля письма (результат второго фильтра): только из списка _AI_COLS."""
+        cols = [k for k in kw if k in self._AI_COLS]
+        if not cols:
+            return
+        vals = []
+        for k in cols:
+            v = kw[k]
+            if k == "threat_words":
+                v = json.dumps(v, ensure_ascii=False) if v else None
+            vals.append(v)
+        self._exec("UPDATE messages SET %s WHERE id=?" % ", ".join(c + "=?" for c in cols), tuple(vals) + (mid,))
+
+    def ai_pending(self):
+        return self._rows("SELECT * FROM messages WHERE kind='in' AND ai_state='pending'")
+
+    # ---------- слова, которые ИИ предлагает добавить в словарь направлений ----------
+    def suggest_add(self, category, word, sample=""):
+        with self.lock:
+            cur = self.con.execute("SELECT id, state FROM ai_suggest WHERE category=? AND word=?", (category, word))
+            r = cur.fetchone()
+            if r is None:
+                self.con.execute("INSERT INTO ai_suggest (category, word, n, sample, updated_at) VALUES (?,?,1,?,?)",
+                                 (category, word, (sample or "")[:120], now_iso()))
+            elif r["state"] is None:
+                self.con.execute("UPDATE ai_suggest SET n=n+1, sample=?, updated_at=? WHERE id=?",
+                                 ((sample or "")[:120], now_iso(), r["id"]))
+            self.con.commit()
+
+    def suggestions(self):
+        with self.lock:
+            cur = self.con.execute("SELECT id, category, word, n, sample FROM ai_suggest WHERE state IS NULL "
+                                   "ORDER BY n DESC, updated_at DESC LIMIT 100")
+            return [dict(r) for r in cur.fetchall()]
+
+    def suggestion(self, sid):
+        with self.lock:
+            r = self.con.execute("SELECT id, category, word, state FROM ai_suggest WHERE id=?", (sid,)).fetchone()
+            return dict(r) if r else None
+
+    def suggest_set(self, sid, state):
+        self._exec("UPDATE ai_suggest SET state=?, updated_at=? WHERE id=?", (state, now_iso(), sid))
 
     def unanswered_candidates(self):
         return self._rows("""SELECT * FROM messages WHERE kind='in' AND ignored IS NULL

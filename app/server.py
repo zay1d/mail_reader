@@ -64,7 +64,8 @@ def make_handler(engine, ui_dir, reports_dir):
 
         # ---- PIN администратора: настройки, журнал, остановка программы ----
         PROTECTED = {"/api/settings", "/api/log", "/api/quit", "/api/outlook-diag", "/api/test-sound",
-                     "/api/telegram-chats", "/api/test-telegram"}
+                     "/api/telegram-chats", "/api/test-telegram",
+                     "/api/ai-test", "/api/ai-sent", "/api/ai-suggestions", "/api/ai-suggestion"}
 
         def _pin_ok(self, p):
             if p not in self.PROTECTED:
@@ -137,6 +138,10 @@ def make_handler(engine, ui_dir, reports_dir):
                 return self._json(engine.state())
             if p == "/api/settings":
                 return self._json(config.public())
+            if p == "/api/ai-sent":
+                return self._json({"items": engine.ai_sent()})
+            if p == "/api/ai-suggestions":
+                return self._json({"items": engine.ai_suggestions()})
             if p == "/api/reports":
                 return self._json({"files": engine.reports(), "shifts": engine.store.shifts_recent()})
             if p == "/api/log":
@@ -198,6 +203,15 @@ def make_handler(engine, ui_dir, reports_dir):
                     return self._json({"ok": True})
                 except Exception as e:
                     return self._json({"ok": False, "error": str(e)[:300]})
+            if p == "/api/set-category":
+                return self._json({"ok": engine.set_category(b.get("id"), b.get("category"))})
+            if p == "/api/ai-test":
+                try:
+                    return self._json({"ok": True, "text": engine.ai_test()})
+                except Exception as e:
+                    return self._json({"ok": False, "error": str(e)[:300]})
+            if p == "/api/ai-suggestion":
+                return self._json({"ok": engine.ai_suggestion(b.get("id"), b.get("action"))})
             if p == "/api/demo":
                 return self._json({"ok": engine.demo(b.get("action"))})
             if p == "/api/quit":

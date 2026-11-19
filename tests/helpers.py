@@ -109,3 +109,56 @@ def set_forward(cfg_categories, key, addr):
         if c.get("key") == key:
             c["forward_to"] = addr
     return cats
+
+
+class FakeAI:
+    """Поддельный второй фильтр: ответы задаются в тесте по теме письма, обращений к Claude нет."""
+    def __init__(self, answers=None, recheck=None):
+        self.answers = answers or {}        # тема письма -> ответ analyze() или исключение
+        self.rechecks = recheck or {}       # тема письма -> ответ recheck() или исключение
+        self.sent = []
+        self.on = True
+
+    def enabled(self):
+        return self.on
+
+    def why_off(self):
+        return "" if self.on else "ИИ выключен в Настройках"
+
+    def prepare(self, subject, body, attachments=(), names=()):
+        import pii
+        mk = pii.Masker(names)
+        text = "Тема: %s\nТекст письма:\n%s" % (mk.mask(subject), mk.mask(body))
+        self.sent.append({"subject": subject, "text": text})
+        self._subject = subject
+        return text, mk
+
+    def _answer(self, table):
+        a = table.get(self._subject)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    def analyze(self, text):
+        a = self._answer(self.answers)
+        if a is None:
+            raise AssertionError("нет ответа ИИ для письма «%s»" % self._subject)
+        d = {"category": "general", "confidence": "high", "category_reason": "причина", "threat": "none",
+             "threat_reason": "", "keywords": []}
+        d.update(a)
+        return d
+
+    def recheck(self, text, rule_cat, rule_words, ai_cat, ai_reason):
+        a = self._answer(self.rechecks) or {"category": ai_cat, "confidence": "high"}
+        return dict({"reason": "после перепроверки"}, **a)
+
+
+def ai_wait(eng, polls=1, timeout=10):
+    """Дождаться, пока поток второго фильтра разберёт очередь, и выполнить опрос(ы) почты."""
+    import time
+    t0 = time.time()
+    while (eng.ai_jobs or not eng.ai_queue.empty()) and time.time() - t0 < timeout:
+        time.sleep(0.01)
+    assert not eng.ai_jobs, "ИИ не разобрал очередь за %d с" % timeout
+    for _ in range(polls):
+        eng.poll()
