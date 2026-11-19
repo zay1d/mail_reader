@@ -9,3 +9,4 @@ data/*
 reports/*
 !reports/.keep
 config.json.broken
+*.log

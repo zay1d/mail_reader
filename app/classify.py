@@ -11,8 +11,10 @@ _RU_TRANSLIT = re.compile(r"\b(zdravstvu\w*|zdrastvu\w*|dobr(?:yy|iy|ij|yj|oe|og
                           r"spasibo|skazhite|skajite|khochu|hochu|mozhno|mojno|skolko|skol'ko|rabotae\w*|kogda|gde|pochemu|nuzhno|"
                           r"nujno|vopros|est')(?![a-z])", re.I)
 # ссылки, адреса почты, домены: латиница в них — не язык человека
-_LINKS = re.compile(r"<[^<>\s]+>|(?:https?://|www\.)\S+|[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+|"
-                    r"\b[\w\-]+(?:\.[\w\-]+)*\.(?:uz|ru|com|org|net|info|io|biz|me|co)\b(?:/\S*)?", re.I)
+# (?<!…) — поиск начинается только с начала слова: без этого длинная строка без пробелов (код, «a.b.c.d…» на
+# 20 000 знаков) разбиралась 5–15 с и задерживала весь опрос почты
+_LINKS = re.compile(r"<[^<>\s]+>|(?:https?://|www\.)\S+|(?<![\w.+\-])[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)+|"
+                    r"(?<![\w.\-])[\w\-]+(?:\.[\w\-]+)*\.(?:uz|ru|com|org|net|info|io|biz|me|co)\b(?:/\S*)?", re.I)
 # начало цитаты переписки / пересланного письма
 _QUOTE = re.compile(r"^[ \t]*(?:>|-{2,}\s*(?:original message|forwarded message|исходное сообщение|пересылаемое сообщение|"
                     r"переадресованное сообщение)|_{8,}|(?:from|от|sent|отправлено|date|дата|kimdan)\s*:|on .{3,120} wrote:|"
@@ -142,7 +144,7 @@ def prioritize(subject: str, body: str, sender: str, importance_high: bool, rule
     return 2
 
 _EMAIL = r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+"
-_EMAIL_RX = re.compile(_EMAIL)
+_EMAIL_RX = re.compile(r"(?<![A-Za-z0-9._%+\-])" + _EMAIL)    # с начала слова: длинная строка без пробелов — не секунды
 _FORM_EMAIL = re.compile(r"(?<![a-zа-я])(?:e-?mail|email address|e-?почта|эл\.?\s*почта|электронная\s+почта|почта|pochta|elektron\s+pochta)"
                          r"\s*[:：]?\s*(?:<|\[|mailto:)?\s*(" + _EMAIL + ")", re.I)
 _FORM_NAME = re.compile(r"^[ \t]*(?:фио|ф\.\s*и\.\s*о\.?|имя|ваше имя|имя и фамилия|name|full name|your name|ism|ismi|ism[ -]familiya|f\.?i\.?sh\.?)"

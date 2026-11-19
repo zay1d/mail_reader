@@ -2,7 +2,6 @@
 """Чтение почты из классического Outlook (COM).
 Ящик ищется в таком порядке: учётная запись с нужным адресом -> хранилище с таким именем ->
 общий ящик (делегирование) -> ящик по умолчанию. Работает с Exchange/Microsoft 365, IMAP и POP."""
-import re
 from datetime import datetime, timedelta
 
 PR_SMTP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F"
@@ -11,7 +10,6 @@ PR_MSGID = "http://schemas.microsoft.com/mapi/proptag/0x1035001F"
 PR_HEADERS = "http://schemas.microsoft.com/mapi/proptag/0x007D001F"
 PR_ATT_HIDDEN = "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"
 PR_ATT_CID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
-MAPI_E_NOT_FOUND = -2147221233        # 0x8004010F: у письма нет такого свойства
 OL_INBOX, OL_SENT, OL_JUNK, OL_MAIL = 6, 5, 23, 43
 # кроме писем во «Входящих» бывают приглашения/отмены/ответы на встречи (53–57) и отчёты о недоставке (46):
 # их тоже показываем — в списке «Не попали в очередь» (отчёт о недоставке = ответ клиенту не дошёл)
@@ -37,11 +35,6 @@ def _dt(v):
 def _iso(d):
     return d.strftime("%Y-%m-%dT%H:%M:%S") if d else ""
 
-def _addrs(s):
-    """«a@x.uz, b@x.uz» / «a@x.uz; b@x.uz» / по строкам -> список адресов. Outlook по умолчанию делит адресатов
-    только «;» — с запятой отчёт и письмо в СБ не уходили («Outlook не распознал имена»)."""
-    return [x for x in re.split(r"[;,\s]+", s or "") if x]
-
 def _err(e):
     try:
         return "%s %s" % (e.args[0], e.args[1])
@@ -63,8 +56,6 @@ class OutlookSource:
         self.error = ""
         self.warn = ""
         self._cache_in = {}
-        self._mid_fail = {}        # EntryID -> сколько раз подряд не прочитался Message-ID
-        self.sub_errors = 0
         self._cache_out = {}
         self.scan = {}             # как читались папки (для диагностики): путь -> сведения
         self.full_scan = set()     # папки, где Outlook не соблюдает порядок «новые сверху» — читать целиком
@@ -301,25 +292,12 @@ class OutlookSource:
             return ""
 
     def _msg_id(self, item):
-        """Message-ID письма; нет его — EntryID. Временный сбой Outlook (занят) — не повод подменять id: после
-        перезапуска то же письмо получило бы другой id (вторая карточка, повторная пересылка в отдел). Поэтому
-        при сбое письмо пропускается до следующего опроса; после 3 сбоев подряд — всё же EntryID."""
         try:
             v = item.PropertyAccessor.GetProperty(PR_MSGID)
             if v:
                 return "mid:" + v.strip()
-        except Exception as e:
-            sc = None
-            try:
-                sc = (getattr(e, "excepinfo", None) or [None] * 6)[5]
-            except Exception:
-                pass
-            if sc != MAPI_E_NOT_FOUND:
-                eid = item.EntryID
-                n = self._mid_fail.get(eid, 0) + 1
-                self._mid_fail[eid] = n
-                if n < 3:
-                    raise
+        except Exception:
+            pass
         return "eid:" + item.EntryID
 
     def _conv(self, item):
@@ -357,15 +335,14 @@ class OutlookSource:
     def _is_bulk(self, item):
         """Рассылка: заголовки List-Unsubscribe / Precedence: bulk / Auto-Submitted."""
         try:
-            # все заголовки: у Microsoft 365 блок ARC/DKIM часто длиннее 6 КБ, и признак рассылки оказывался дальше
-            h = "\n" + (item.PropertyAccessor.GetProperty(PR_HEADERS) or "").lower()
+            h = (item.PropertyAccessor.GetProperty(PR_HEADERS) or "")[:6000].lower()
         except Exception:
             return ""
         # причина — словами для списка «Не попали в очередь» на экране
         for mark, why in (("list-unsubscribe:", "есть ссылка «отписаться»"), ("precedence: bulk", "Precedence: bulk"),
                           ("precedence: list", "Precedence: list"), ("auto-submitted: auto-", "Auto-Submitted"),
                           ("x-auto-response-suppress:", "X-Auto-Response-Suppress")):
-            if "\n" + mark in h:      # только имя заголовка в начале строки, не упоминание в подписи DKIM (h=…:list-unsubscribe:…)
+            if mark in h:
                 return why
         return ""
 
@@ -392,7 +369,6 @@ class OutlookSource:
             it = items.GetFirst()
         except Exception as e:
             st["error"] = "GetFirst: " + _err(e)
-            st["errors"] += 1          # папка не прочитана — иначе её письма сочли бы удалёнными из Outlook
             return
         n = old_run = 0
         prev = None
@@ -438,13 +414,8 @@ class OutlookSource:
                 st["errors"] += 1
             try:
                 it = items.GetNext()
-            except Exception as e:
-                st["error"] = "GetNext: " + _err(e)
-                st["errors"] += 1      # чтение оборвалось на середине папки — это неполное чтение
+            except Exception:
                 break
-        if it is not None and n >= limit and (full or old_run < 40):
-            st["errors"] += 1          # папка прочитана не до конца (лимит элементов)
-            st["error"] = st["error"] or "прочитано только %d элементов" % n
         st["seen"] = n
 
     def _subfolders(self, folder, depth=3):
@@ -456,7 +427,7 @@ class OutlookSource:
             for i in range(1, folder.Folders.Count + 1):
                 out += self._subfolders(folder.Folders.Item(i), depth - 1)
         except Exception:
-            self.sub_errors += 1       # подпапки не прочитаны — их письма не считать удалёнными
+            pass
         return out
 
     def _reply_to(self, item):
@@ -516,7 +487,6 @@ class OutlookSource:
         incoming, outgoing = [], []
         seen_in, seen_out = set(), set()
         self.scan = {}
-        self.sub_errors = 0
         problems = 0                                   # сбои чтения: папки или отдельные письма
         try:
             folders = [(f, False) for f in self._subfolders(self.inbox)]
@@ -531,7 +501,8 @@ class OutlookSource:
                             eid = it.EntryID
                             seen_in.add(eid)
                             m = self._cache_in.get(eid)
-                            if m is None:
+                            # письмо перенесли из «Нежелательной» во «Входящие» (или обратно) с тем же EntryID — прочитать заново
+                            if m is None or bool(m.get("junk")) != is_junk:
                                 m = self._parse_in(it, d, is_junk)
                                 self._cache_in[eid] = m
                             incoming.append(m)
@@ -572,7 +543,7 @@ class OutlookSource:
                 except Exception as e:
                     self.warn = "не читается папка «Отправленные»: " + _err(e)
                     problems += 1
-            problems += sum(st.get("errors", 0) for st in self.scan.values()) + self.sub_errors
+            problems += sum(st.get("errors", 0) for st in self.scan.values())
             self.last_complete = problems == 0
             self.read_problems = problems
             for k in [k for k in self._cache_in if k not in seen_in]:
@@ -771,8 +742,7 @@ class OutlookSource:
         app, ns = self._session()
         item = ns.GetItemFromID(msg["entry_id"])
         f = item.Forward()
-        for a in _addrs(to):
-            f.Recipients.Add(a)
+        f.Recipients.Add(to)
         try:
             f.Recipients.ResolveAll()
         except Exception:
@@ -788,9 +758,9 @@ class OutlookSource:
     def send_mail(self, to, cc, subject, html, inline=None):
         app, ns = self._session()
         m = app.CreateItem(0)
-        m.To = "; ".join(_addrs(to))
-        if _addrs(cc):
-            m.CC = "; ".join(_addrs(cc))
+        m.To = to
+        if cc:
+            m.CC = cc
         for cid, path in (inline or []):
             try:
                 att = m.Attachments.Add(path)

@@ -16,8 +16,8 @@ def is_ignored(sender_addr: str, sender_name: str, subject: str, cfg) -> str:
     """Причина игнорирования или пустая строка."""
     a = (sender_addr or "").lower()
     n = (sender_name or "").lower()
-    for own in cfg.get("own_addresses") or []:
-        if own and own.lower() == a:
+    for own in list(cfg.get("own_addresses") or []) + [cfg.get("mailbox_address") or ""]:
+        if own and own.strip().lower() == a:
             return "своё письмо"
     for pat in cfg.get("ignore_senders") or []:
         p = (pat or "").lower().strip()

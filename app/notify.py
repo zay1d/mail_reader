@@ -210,7 +210,7 @@ def bring_to_front(title_part, pin=False):
         return 0
 
 def test_sound():
-    if winsound:
+    if winsound and not _siren_on:           # проверка звука не должна глушить сирену, если идёт тревога
         try:
             winsound.PlaySound(_paths.get("chime"), winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception:

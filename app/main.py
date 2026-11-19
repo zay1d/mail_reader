@@ -54,7 +54,10 @@ def _single_instance(port):
 def main():
     base = config.BASE
     cfg = config.load()
-    port = int(cfg.get("port") or 8791)
+    try:
+        port = int(cfg.get("port") or 8791)
+    except Exception:
+        port = 8791
     url = "http://127.0.0.1:%d/" % port
     if not _single_instance(port) or _alive(port):   # уже запущено (двойной клик, сторож, автозапуск)
         if "--watchdog" not in sys.argv:

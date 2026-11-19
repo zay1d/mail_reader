@@ -16,25 +16,16 @@ _CYR2LAT = str.maketrans({
 _SPACED = re.compile(r"(?<![^\s])((?:[^\W\d_]\s){2,}[^\W\d_])(?![^\s])", re.U)
 _DOTTED = re.compile(r"(?<![^\W\d_])((?:[^\W\d_][.\-_*]){2,}[^\W\d_])", re.U)
 
-# все виды узбекского апострофа (oʻ, o‘, o’, o`) — к одному «'»
-_APOS = str.maketrans({c: "'" for c in "\u02bb\u02bc\u2018\u2019`\u00b4\u2032"})
-
-def _clean(text):
-    """NFKC, единый апостроф, без невидимых символов (мягкий перенос, пробел нулевой ширины), нижний регистр."""
-    t = unicodedata.normalize("NFKC", text or "").translate(_APOS)
-    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")
-    return t.lower().replace("ё", "е")
-
 def _norm(text: str) -> str:
-    t = _clean(text)
+    t = unicodedata.normalize("NFKC", text or "").lower().replace("ё", "е")
     t = _SPACED.sub(lambda m: m.group(1).replace(" ", ""), t)
     t = _DOTTED.sub(lambda m: re.sub(r"[.\-_*]", "", m.group(1)), t)
-    return re.sub(r"\s+", " ", t)   # перенос строки в письме («kill\r\nyou») — тоже пробел
+    return re.sub(r"[ \t]+", " ", t)
 
 def _spaced_tokens(text):
     """Слова, написанные в разрядку («б о м б а в тц»), склеенные вместе с прилипшими короткими
     словами: «бомбав». Проверяются шаблонами без границ слова."""
-    t = _clean(text)
+    t = unicodedata.normalize("NFKC", text or "").lower().replace("ё", "е")
     out = []
     for m in _SPACED.finditer(t):
         out.append(m.group(1).replace(" ", ""))
@@ -62,7 +53,7 @@ _LETTER = "0-9a-zа-яёўқғҳ"
 class _Phrase:
     """Слово или фраза словаря: ищется с начала слова; пробел в конце записи — слово должно закончиться."""
     def __init__(self, w, word_end=True):
-        raw = _clean(w)
+        raw = unicodedata.normalize("NFKC", w or "").lower().replace("ё", "е")
         self.text = re.sub(r"[ \t]+", " ", raw).strip()
         pat = "(?<![%s])" % _LETTER + re.escape(self.text)
         if raw.endswith((" ", "\t")):
@@ -98,18 +89,15 @@ class Detector:
         # исключение рядом с найденным словом (±30 знаков), ищется с начала слова: «тир» не цепляет «квартир».
         # Оборот с самим словом («просто бомба», «aksiya bombasi», «взрывной рост») гасит только ЭТО вхождение
         # (найденное слово внутри оборота): «Это бомба! … В здании бомба» — вторая «бомба» тревогу поднимет.
-        # Ищем по всему тексту и проверяем, попадает ли совпадение в окно: вырезанное окно резало слова
-        # («квартире» → «тире») и настоящая угроза гасилась исключением «тир».
         hit = v[s:e]
         stem = hit[:4]
-        lo, hi = max(0, s - 30), e + 30
+        win = v[max(0, s - 30):e + 30]
         for x in self.exceptions:
-            ms = list(x.rx.finditer(v))
-            if any(s < mm.end() and e > mm.start() for mm in ms):
+            if any(s < mm.end() and e > mm.start() for mm in x.rx.finditer(v)):
                 return True              # само это слово — часть безобидного оборота («просто бомба», «photo shooting»)
             if x.own or (stem and stem in x.text):
                 continue                 # оборот со словом-угрозой в другом месте письма соседние слова не гасит
-            if any(mm.start() < hi and mm.end() > lo for mm in ms):
+            if x.found(win):
                 return True              # слово-контекст рядом: «стрельба в тире», «лазертаг: стрельба»
         return False
 

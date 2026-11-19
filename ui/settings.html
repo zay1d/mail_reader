@@ -43,19 +43,6 @@
   </div>
 
   <div class="sect">
-    <h2>Сортировка писем через ИИ (Claude)</h2>
-    <label class="check"><input type="checkbox" id="ai_enabled"> Определять направление, приоритет и язык письма с помощью ИИ</label>
-    <p class="help">ИИ читает тему и текст каждого нового письма и выбирает направление (по описаниям в разделе «Направления»), приоритет и язык автоответа, а на карточке пишет одну строку «о чём письмо». Если ключа нет, интернет недоступен или ИИ ответил ошибкой — письмо сортируется по ключевым словам, как раньше. Тревогу по угрозам по-прежнему поднимают ключевые слова; ИИ может только дополнительно показать жёлтый экран «проверьте письмо». Текст писем отправляется в сервис Anthropic (api.anthropic.com).</p>
-    <div class="grid2">
-      <div><label class="f">Ключ API (console.anthropic.com → API Keys)</label><input id="ai_api_key" type="password" autocomplete="off" placeholder="sk-ant-..."></div>
-      <div><label class="f">Модель</label><select id="ai_model"></select></div>
-    </div>
-    <p class="help" id="ai_key_state"></p>
-    <p style="margin:10px 0 0"><button class="btn-ghost" id="btn-ai" style="padding:9px 14px;font-size:14px">Проверить ИИ</button> <button class="btn-ghost" id="btn-ai-clear" style="padding:9px 14px;font-size:14px">Удалить ключ</button></p>
-    <div class="log" id="ai-res" hidden style="margin-top:8px"></div>
-  </div>
-
-  <div class="sect">
     <h2>Напоминания и сроки</h2>
     <div class="grid3">
       <div><label class="f">Повтор напоминания о просрочке, минут</label><input id="repeat_alert_minutes" type="number" min="1"></div>
@@ -136,7 +123,7 @@
     </div>
     <label class="f">VIP-отправители: часть адреса или домен, письма от них всегда срочные (по одному в строке)</label>
     <textarea id="vip_senders" style="min-height:60px" placeholder="gov.uz&#10;director@"></textarea>
-    <p class="help">Всегда срочные: письма с флагом «Важное» в Outlook, VIP-отправители, направления «Жалобы» и «Безопасность», угрозы. Низкий приоритет — направление «Вакансии». Когда включена сортировка через ИИ, остальное решает ИИ, а слова срочности и низкого приоритета работают как запасной вариант.</p>
+    <p class="help">Также срочными считаются: письма с флагом «Важное» в Outlook, направления «Жалобы» и «Безопасность», угрозы. Низкий приоритет — направление «Вакансии».</p>
   </div>
 
   <div class="sect">
@@ -147,9 +134,7 @@
     </div>
     <label class="f">Пересылать письма этого направления на адрес (пусто = не пересылать)</label>
     <input id="cat_forward" placeholder="marketing@example.uz">
-    <label class="f">Описание для ИИ: какие письма относятся к этому направлению (пусто — стандартное описание)</label>
-    <textarea id="cat_ai_hint" style="min-height:60px" placeholder="Например: компании хотят арендовать помещение, островок, место на фудкорте; вопросы арендаторов по договору"></textarea>
-    <label class="f">Ключевые слова направления (части слов, по одному в строке; в теме письма вес выше). Работают, когда ИИ выключен или недоступен</label>
+    <label class="f">Ключевые слова направления (части слов, по одному в строке; в теме письма вес выше)</label>
     <textarea id="cat_words" style="min-height:120px"></textarea>
     <p class="help">Письмо попадает в направление с наибольшим числом совпадений. Если совпадений нет — «Общие вопросы». Жалоба побеждает при любом совпадении.</p>
     <label class="check"><input type="checkbox" id="forward_removes_from_queue"> Пересланное в отдел письмо снимать с очереди ресепшн (отвечает отдел; в отчёте — отдельной строкой «Переслано»)</label>
@@ -206,11 +191,6 @@
     ['mailbox_address','count_from','poll_seconds','lookback_days','repeat_alert_minutes','manager_email','report_cc','security_phone','security_email','telegram_bot_token','telegram_chat_id'].forEach(function(k){$(k).value=c[k]==null?'':c[k];});
     ['own_addresses','ignore_senders','ignore_subjects','threat_words','threat_exceptions','threat_soft_words','threat_place_words','threat_time_words','threat_polite_words','staff'].forEach(function(k){$(k).value=(c[k]||[]).join('\n');});
     $('shifts').value=(c.shifts||[]).map(function(s){return s.name+';'+s.start+';'+s.end;}).join('\n');
-    $('ai_enabled').checked=!!c.ai_enabled; $('ai_api_key').value=''; aiClear=false;
-    var models=c.ai_models||{}; $('ai_model').innerHTML=Object.keys(models).map(function(k){return '<option value="'+escH(k)+'">'+escH(models[k])+'</option>';}).join('');
-    if(c.ai_model && !models[c.ai_model]) $('ai_model').innerHTML+='<option value="'+escH(c.ai_model)+'">'+escH(c.ai_model)+'</option>';
-    $('ai_model').value=c.ai_model||'claude-opus-5-5';
-    $('ai_key_state').textContent=c.ai_api_key_set?'Ключ сохранён. Чтобы заменить — вставьте новый и сохраните.':'Ключ не задан — сортировка идёт по ключевым словам.';
     $('sound').checked=!!c.sound; $('toast').checked=!!c.toast; $('autostart').checked=c.autostart!==false;
     // автоответ
     $('auto_reply_enabled').checked=!!c.auto_reply_enabled; $('reception_phone').value=c.reception_phone||'';
@@ -224,16 +204,16 @@
     var p=c.priority||{}; $('sla1').value=(p.sla||{})['1']||15; $('sla2').value=(p.sla||{})['2']||60; $('sla3').value=(p.sla||{})['3']||240;
     $('urgent_words').value=(p.urgent_words||[]).join('\n'); $('low_words').value=(p.low_words||[]).join('\n'); $('vip_senders').value=(p.vip_senders||[]).join('\n');
   }
-  var tpls={}, cats=[], curTpl=null, curCat=null, aiClear=false;
+  var tpls={}, cats=[], curTpl=null, curCat=null;
   function showTpl(){ var k=$('tpl_cat').value, l=$('tpl_lang').value; curTpl=[k,l]; $('tpl_text').value=((tpls[k]||{})[l])||''; }
   function saveTpl(){ if(!curTpl)return; var k=curTpl[0], l=curTpl[1]; tpls[k]=tpls[k]||{}; tpls[k][l]=$('tpl_text').value; }
   $('tpl_cat').onchange=$('tpl_lang').onchange=function(){ saveTpl(); showTpl(); };
   $('tpl_text').oninput=saveTpl;
   function findCat(k){ for(var i=0;i<cats.length;i++) if(cats[i].key===k) return cats[i]; return null; }
-  function showCat(){ var x=findCat($('cat_key').value); curCat=x; $('cat_name').value=x?x.name:''; $('cat_forward').value=x?(x.forward_to||''):''; $('cat_words').value=x?(x.words||[]).join('\n'):''; $('cat_ai_hint').value=x?(x.ai_hint||''):''; $('cat_ai_hint').placeholder=(x&&(cfg.ai_default_hints||{})[x.key])||'Например: компании хотят арендовать помещение, островок, место на фудкорте'; }
-  function saveCat(){ if(!curCat)return; curCat.name=$('cat_name').value.trim()||curCat.name; curCat.forward_to=$('cat_forward').value.trim(); curCat.words=words($('cat_words').value); curCat.ai_hint=$('cat_ai_hint').value.trim(); }
+  function showCat(){ var x=findCat($('cat_key').value); curCat=x; $('cat_name').value=x?x.name:''; $('cat_forward').value=x?(x.forward_to||''):''; $('cat_words').value=x?(x.words||[]).join('\n'):''; }
+  function saveCat(){ if(!curCat)return; curCat.name=$('cat_name').value.trim()||curCat.name; curCat.forward_to=$('cat_forward').value.trim(); curCat.words=words($('cat_words').value); }
   $('cat_key').onchange=function(){ saveCat(); showCat(); };
-  $('cat_name').oninput=$('cat_words').oninput=$('cat_forward').oninput=$('cat_ai_hint').oninput=saveCat;
+  $('cat_name').oninput=$('cat_words').oninput=$('cat_forward').oninput=saveCat;
   $('btn-save').onclick=function(){
     saveTpl(); saveCat();
     var v={mode:document.querySelector('input[name=mode]:checked').value};
@@ -249,16 +229,13 @@
     v.shifts=lines($('shifts').value).map(function(l){var p=l.split(';');return {name:(p[0]||'').trim(),start:(p[1]||'09:00').trim(),end:(p[2]||'17:00').trim()};}).filter(function(s){return s.name;});
     var badShift=v.shifts.filter(function(s){return !/^\d{1,2}[:.]\d{2}$/.test(s.start)||!/^\d{1,2}[:.]\d{2}$/.test(s.end);})[0];
     if(badShift){alert('Смены: время пишется ЧЧ:ММ через точку с запятой, например «Смена 1;09:00;17:00». Ошибка в строке «'+badShift.name+'».');return;}
-    v.ai_enabled=$('ai_enabled').checked; v.ai_model=$('ai_model').value; v.ai_api_key=$('ai_api_key').value.trim(); if(aiClear) v.ai_api_key_clear=true;
     v.sound=$('sound').checked; v.toast=$('toast').checked; v.autostart=$('autostart').checked;
     var np=$('admin_pin').value.trim(); if(!/^\d{4,8}$/.test(np)){alert('PIN — от 4 до 8 цифр');return;} v.admin_pin=np;
-    fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)}).then(function(r){ if(r.status===403){alert('Сессия настроек истекла, введите PIN заново');location.reload();return;} if(!r.ok){alert('Настройки не сохранены: ошибка программы ('+r.status+'). Подробности — в журнале.');return;} pin=np; try{sessionStorage.setItem('rm_pin',pin);}catch(e){} if(v.ai_api_key||aiClear){ $('ai_key_state').textContent=aiClear?'Ключ удалён.':'Ключ сохранён.'; $('ai_api_key').value=''; aiClear=false; } $('saved').hidden=false;setTimeout(function(){$('saved').hidden=true;},2500);}).catch(function(){alert('Программа не отвечает — настройки не сохранены');});
+    fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)}).then(function(r){ if(r.status===403){alert('Сессия настроек истекла, введите PIN заново');location.reload();return;} if(!r.ok){alert('Настройки не сохранены: ошибка программы ('+r.status+'). Подробности — в журнале.');return;} pin=np; try{sessionStorage.setItem('rm_pin',pin);}catch(e){} $('saved').hidden=false;setTimeout(function(){$('saved').hidden=true;},2500);}).catch(function(){alert('Программа не отвечает — настройки не сохранены');});
   };
   $('btn-now').onclick=function(){var d=new Date();var p=function(n){return (n<10?'0':'')+n;};$('count_from').value=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());};
   $('btn-nocf').onclick=function(){$('count_from').value='';};
   $('btn-diag').onclick=function(){ $('diag').hidden=false; $('diag').textContent='Проверка… (сначала сохраните настройки, если меняли адрес)'; fetch('/api/outlook-diag',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ $('diag').textContent=d.text; }).catch(function(){ $('diag').textContent='Программа не отвечает'; }); };
-  $('btn-ai').onclick=function(){ $('ai-res').hidden=false; $('ai-res').textContent='Проверка… (сначала нажмите «Сохранить настройки», если меняли ключ или модель)'; fetch('/api/test-ai',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ $('ai-res').textContent=(d.ok?'✓ ':'Ошибка: ')+(d.text||''); $('ai-res').style.color=d.ok?'var(--green)':'var(--red)'; }).catch(function(){ $('ai-res').textContent='Программа не отвечает'; }); };
-  $('btn-ai-clear').onclick=function(){ aiClear=true; $('ai_api_key').value=''; $('ai_key_state').textContent='Ключ будет удалён после «Сохранить настройки».'; };
   $('btn-test').onclick=function(){fetch('/api/test-sound',{method:'POST'});};
   function escH(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   $('btn-tgchats').onclick=function(){ $('tg-chats').textContent='Запрос… (токен должен быть сохранён)'; fetch('/api/telegram-chats',{method:'POST'}).then(function(r){return r.json();}).then(function(d){ if(!d.ok){$('tg-chats').textContent='Ошибка: '+(d.error||'');return;} if(!d.chats.length){$('tg-chats').textContent='Пока никто не писал боту.';return;} $('tg-chats').innerHTML=d.chats.map(function(c){return '<button class="btn-ghost" style="padding:4px 10px;font-size:13px;margin:3px" data-cid="'+escH(c.chat_id)+'">+ '+escH(c.name)+' ('+(c.type==='private'?'личный':escH(c.type))+', '+escH(c.chat_id)+')</button>';}).join(''); Array.prototype.forEach.call($('tg-chats').querySelectorAll('button'),function(b){b.onclick=function(){var v=$('telegram_chat_id').value.trim(); var ids=v?v.split(',').map(function(x){return x.trim();}):[]; if(ids.indexOf(b.dataset.cid)<0) ids.push(b.dataset.cid); $('telegram_chat_id').value=ids.join(', ');};}); }); };

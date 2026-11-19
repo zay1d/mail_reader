@@ -53,11 +53,64 @@ CREATE TABLE IF NOT EXISTS shifts (
 """
 _NEW_COLS = {"lang": "TEXT", "category": "TEXT", "priority": "INTEGER", "auto_replied_at": "TEXT", "attachments": "TEXT", "threat_level": "INTEGER", "forwarded_to": "TEXT", "forwarded_at": "TEXT", "last_seen": "TEXT", "junk": "INTEGER",
             "reply_to": "TEXT", "client_email": "TEXT", "client_name": "TEXT", "reply_self": "INTEGER",
-            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT", "ai_summary": "TEXT",
-            "actions_done": "INTEGER", "action_tries": "INTEGER", "answer_seen_at": "TEXT"}
+            "self_reply_at": "TEXT", "self_reply_to": "TEXT", "unignored_at": "TEXT"}
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+def _damaged(e):
+    """Ошибка SQLite означает повреждённый файл (а не «занят», «нет доступа», «диск полон»)."""
+    s = str(e).lower()
+    return isinstance(e, sqlite3.DatabaseError) and ("malformed" in s or "not a database" in s)
+
+def _open_ok(path):
+    """Открыть базу и проверить целостность; повреждена — None."""
+    try:
+        s = Store(path)
+    except Exception as e:
+        if _damaged(e):
+            return None
+        raise
+    try:
+        with s.lock:
+            res = s.con.execute("PRAGMA quick_check").fetchone()
+        if res and res[0] == "ok":
+            return s
+    except Exception as e:
+        if not _damaged(e):
+            s.con.close()
+            raise
+    s.con.close()
+    return None
+
+def open_checked(path, backup_dir):
+    """Открыть базу писем. Файл повреждён (внезапное выключение, сбой диска) — программа не должна перестать
+    запускаться: повреждённый файл откладывается (mail.db.broken-ДАТА), берётся последняя ежедневная копия из
+    data/backup, нет годной копии — пустая база. Возвращает (Store, сообщение для журнала или "")."""
+    s = _open_ok(path)
+    if s is not None:
+        return s, ""
+    import shutil
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    for ext in ("", "-journal", "-wal", "-shm"):       # журнал повреждённой базы к копии применять нельзя
+        if os.path.exists(path + ext):
+            os.replace(path + ext, "%s.broken-%s%s" % (path, stamp, ext))
+    copies = []
+    if os.path.isdir(backup_dir):
+        copies = sorted((f for f in os.listdir(backup_dir) if f.startswith("mail-") and f.endswith(".db")), reverse=True)
+    for f in copies:
+        try:
+            shutil.copy2(os.path.join(backup_dir, f), path)
+            s = _open_ok(path)
+        except Exception:
+            s = None
+        if s is not None:
+            return s, ("файл базы писем был повреждён и отложен (mail.db.broken-%s); база восстановлена из копии %s. "
+                       "Письмам, пришедшим до этой минуты, автоответ и пересылка повторно не отправляются" % (stamp, f))
+        if os.path.exists(path):
+            os.remove(path)
+    return Store(path), ("файл базы писем был повреждён и отложен (mail.db.broken-%s); годной копии нет — начата новая "
+                         "база. Письмам, пришедшим до этой минуты, автоответ и пересылка не отправляются" % stamp)
 
 class Store:
     def __init__(self, path):
@@ -65,18 +118,20 @@ class Store:
         self.lock = threading.RLock()
         self.con = sqlite3.connect(path, check_same_thread=False)
         self.con.row_factory = sqlite3.Row
-        with self.lock:
-            self.con.executescript(SCHEMA)
-            cols = {r[1] for r in self.con.execute("PRAGMA table_info(messages)")}
-            for c, t in _NEW_COLS.items():
-                if c not in cols:
-                    self.con.execute("ALTER TABLE messages ADD COLUMN %s %s" % (c, t))
-                    if c == "actions_done":   # обновление: письма из прежних версий уже обработаны — не повторять
-                        self.con.execute("UPDATE messages SET actions_done=1")
-            scols = {r[1] for r in self.con.execute("PRAGMA table_info(sessions)")}
-            if "mode" not in scols:          # смены, открытые в демо-режиме, отличаем от настоящих
-                self.con.execute("ALTER TABLE sessions ADD COLUMN mode TEXT")
-            self.con.commit()
+        try:
+            with self.lock:
+                self.con.executescript(SCHEMA)
+                cols = {r[1] for r in self.con.execute("PRAGMA table_info(messages)")}
+                for c, t in _NEW_COLS.items():
+                    if c not in cols:
+                        self.con.execute("ALTER TABLE messages ADD COLUMN %s %s" % (c, t))
+                scols = {r[1] for r in self.con.execute("PRAGMA table_info(sessions)")}
+                if "mode" not in scols:          # смены, открытые в демо-режиме, отличаем от настоящих
+                    self.con.execute("ALTER TABLE sessions ADD COLUMN mode TEXT")
+                self.con.commit()
+        except Exception:
+            self.con.close()                     # файл не держим: повреждённую базу нужно отложить и заменить копией
+            raise
 
     # ---------- служебное ----------
     def _rows(self, sql, args=()):
@@ -110,6 +165,17 @@ class Store:
     def touch_in(self, m):
         """Письмо уже в базе: обновить только ссылки на элемент Outlook и время, когда его видели."""
         self._exec("UPDATE messages SET entry_id=?, conv_id=?, last_seen=? WHERE id=?", (m.get("entry_id"), m.get("conv_id"), now_iso(), m["id"]))
+
+    def touch_many(self, msgs):
+        """То же для всех писем опроса одним сохранением: отдельная запись на диск на каждое письмо при каждом
+        опросе (сотни писем каждые 20 с) растягивала опрос на секунды и постоянно нагружала диск."""
+        if not msgs:
+            return
+        t = now_iso()
+        with self.lock:
+            self.con.executemany("UPDATE messages SET entry_id=?, conv_id=?, last_seen=? WHERE id=?",
+                                 [(m.get("entry_id"), m.get("conv_id"), t, m["id"]) for m in msgs])
+            self.con.commit()
 
     def vanished(self, since_iso, unseen_before_iso):
         """Письма очереди, которых Outlook давно не показывает (удалены/перемещены сотрудником)."""
@@ -159,34 +225,6 @@ class Store:
     def junk_ids(self):
         """Письма, которые пришли в «Нежелательную почту» и ещё не переехали во «Входящие»."""
         return {r["id"] for r in self._rows("SELECT id FROM messages WHERE kind='in' AND junk=1")}
-
-    def pending_actions(self, since_iso, max_tries=8):
-        """Письма в очереди, у которых автоответ/пересылка ещё не удались."""
-        return self._rows("""SELECT * FROM messages WHERE kind='in' AND ignored IS NULL AND answered_at IS NULL
-            AND no_reply_reason IS NULL AND COALESCE(actions_done,0)=0 AND COALESCE(action_tries,0)<?
-            AND received_at>=?""", (max_tries, since_iso))
-
-    def set_actions(self, mid, ok):
-        """Отметить попытку автоответа/пересылки. -> число попыток."""
-        with self.lock:
-            self.con.execute("UPDATE messages SET actions_done=?, action_tries=COALESCE(action_tries,0)+1 WHERE id=?",
-                             (1 if ok else 0, mid))
-            self.con.commit()
-            r = self.con.execute("SELECT action_tries FROM messages WHERE id=?", (mid,)).fetchone()
-            return int(r[0] or 0) if r else 0
-
-    def set_ai_summary(self, mid, summary):
-        self._exec("UPDATE messages SET ai_summary=? WHERE id=?", ((summary or "")[:200] or None, mid))
-
-    def touch_many(self, ms):
-        """touch_in для многих писем одной транзакцией (было: запись на диск на каждое письмо каждые 20 с)."""
-        if not ms:
-            return
-        t = now_iso()
-        with self.lock:
-            self.con.executemany("UPDATE messages SET entry_id=?, conv_id=?, last_seen=? WHERE id=?",
-                                 [(m.get("entry_id"), m.get("conv_id"), t, m["id"]) for m in ms])
-            self.con.commit()
 
     def set_junk(self, mid, junk):
         self._exec("UPDATE messages SET junk=? WHERE id=?", (1 if junk else 0, mid))
@@ -251,10 +289,7 @@ class Store:
                              ORDER BY forwarded_at DESC""", (start_iso, end_iso))
 
     def mark_answered(self, mid, answer_id, answered_at):
-        # answer_seen_at — когда программа увидела ответ: ответ, отправленный в 16:59 и попавший в «Отправленные»
-        # после закрытия смены в 17:00, засчитывается следующей смене (иначе его не было бы ни в одном отчёте)
-        self._exec("UPDATE messages SET answered_at=?, answer_id=?, answer_seen_at=? WHERE id=?",
-                   (answered_at, answer_id, now_iso(), mid))
+        self._exec("UPDATE messages SET answered_at=?, answer_id=? WHERE id=?", (answered_at, answer_id, mid))
 
     def set_client(self, m):
         """Дописать «Отвечать на» и адрес клиента письму, пришедшему до v1.30."""
@@ -326,9 +361,7 @@ class Store:
         return self._rows(sql + " ORDER BY received_at", (start_iso, end_iso))
 
     def answered_between(self, start_iso, end_iso):
-        return self._rows("""SELECT * FROM messages WHERE kind='in' AND answered_at IS NOT NULL
-                             AND MAX(answered_at, COALESCE(answer_seen_at, answered_at))>=?
-                             AND MAX(answered_at, COALESCE(answer_seen_at, answered_at))<?
+        return self._rows("""SELECT * FROM messages WHERE kind='in' AND answered_at>=? AND answered_at<?
                              ORDER BY answered_at DESC""", (start_iso, end_iso))
 
     def no_reply_between(self, start_iso, end_iso):

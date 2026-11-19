@@ -120,9 +120,6 @@ DEFAULTS = {
     "staff": [],                          # сотрудники ресепшн (Настройки → Смены)
     "forward_removes_from_queue": True,   # пересланное в отдел письмо снимается с очереди ресепшн
     "forward_note": "Переслано с почты ресепшн Tashkent City Mall. Направление: {category}. Просьба ответить отправителю напрямую.",
-    "ai_enabled": False,                  # сортировка писем через ИИ (Claude API); выключено или нет ключа — по ключевым словам
-    "ai_api_key": "",                     # ключ API с console.anthropic.com (в Настройках не показывается)
-    "ai_model": "claude-opus-5-5",
 }
 
 _lock = threading.Lock()
@@ -133,55 +130,116 @@ def load():
     with _lock:
         cfg = copy.deepcopy(DEFAULTS)
         if os.path.exists(CONFIG_PATH):
-            user = None
-            for attempt in range(5):
-                try:
-                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                        user = json.load(f)
-                    break
-                except (ValueError, UnicodeDecodeError) as e:     # файл испорчен (обрыв записи)
-                    user = _restore_backup(cfg, e)
-                    break
-                except OSError:            # файл занят антивирусом/OneDrive — подождать, это не порча
-                    import time
-                    time.sleep(1)
-            if user is None and not cfg.get("_config_error"):
-                cfg["_config_error"] = "config.json не прочитан (занят другой программой) — работают настройки по умолчанию"
-            if isinstance(user, dict):
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    user = json.load(f)
                 for k, v in user.items():
                     cfg[k] = v
+                _sanitize(cfg)
                 _merge_defaults(cfg)
-        if _cfg is not None:               # тот же объект: Engine и OutlookSource держат ссылку на него
-            _cfg.clear()
-            _cfg.update(cfg)
-            return _cfg
+            except Exception as e:
+                try:
+                    print("config.json не прочитан:", e)
+                except Exception:
+                    pass
+                cfg = copy.deepcopy(DEFAULTS)
+                try:                       # битый файл откладываем, чтобы было видно, что настройки слетели
+                    os.replace(CONFIG_PATH, CONFIG_PATH + ".broken")
+                    cfg["_config_error"] = "config.json повреждён и переименован в config.json.broken: %s" % str(e)[:120]
+                except Exception:
+                    pass
+                # без настроек программа ушла бы в демо-режим и перестала читать почту — берём ежедневную копию
+                user, name = _from_backup()
+                if user is not None:
+                    cfg = copy.deepcopy(DEFAULTS)
+                    cfg.update(user)
+                    _sanitize(cfg)
+                    _merge_defaults(cfg)
+                    cfg["_config_error"] = ("config.json был повреждён (отложен как config.json.broken); настройки "
+                                            "восстановлены из копии %s — проверьте Настройки" % name)
+                    try:
+                        _write(cfg)
+                    except Exception:
+                        pass
         _cfg = cfg
         return cfg
 
-def _restore_backup(cfg, err):
-    """config.json испорчен: отложить его в .broken и взять последнюю ежедневную копию из data/backup
-    (иначе программа ушла бы в демо-режим без контроля почты и угроз)."""
+def _from_backup():
+    """Последняя читаемая ежедневная копия настроек (data/backup/config-ГГГГ-ММ-ДД.json) или (None, "")."""
+    folder = os.path.join(os.path.dirname(CONFIG_PATH), "data", "backup")
     try:
-        os.replace(CONFIG_PATH, CONFIG_PATH + ".broken")
+        names = sorted((f for f in os.listdir(folder) if f.startswith("config-") and f.endswith(".json")), reverse=True)
     except Exception:
-        pass
-    import glob
-    for p in sorted(glob.glob(os.path.join(BASE, "data", "backup", "config-*.json")), reverse=True):
+        return None, ""
+    for f in names:
         try:
-            with open(p, "r", encoding="utf-8") as f:
-                user = json.load(f)
-            cfg["_config_error"] = ("config.json был повреждён (%s) — восстановлены настройки из копии %s"
-                                    % (str(err)[:80], os.path.basename(p)))
-            try:
-                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(user, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-            return user
+            with open(os.path.join(folder, f), "r", encoding="utf-8") as fh:
+                user = json.load(fh)
+            if isinstance(user, dict) and user:
+                return user, f
         except Exception:
             continue
-    cfg["_config_error"] = "config.json повреждён и переименован в config.json.broken: %s" % str(err)[:120]
-    return None
+    return None, ""
+
+def _write(cfg):
+    """Запись через временный файл: при выключении компьютера посреди сохранения config.json остаётся целым
+    (обрезанный файл = настройки сброшены, программа в демо-режиме)."""
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in cfg.items() if not k.startswith("_")}, f, ensure_ascii=False, indent=2)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, CONFIG_PATH)
+
+_INT_KEYS = {"port": (1, 65535), "poll_seconds": (5, 3600), "lookback_days": (1, 60), "repeat_alert_minutes": (1, 1440),
+             "sla_warn_minutes": (1, 100000), "sla_overdue_minutes": (1, 100000), "auto_reply_backlog_hours": (1, 720)}
+
+def _sanitize(cfg):
+    """Значения не того вида (ручная правка config.json: «20 сек», пусто, строка вместо списка) заменяются
+    стандартными — иначе программа спотыкалась бы на каждом опросе или показывала пустой экран."""
+    try:
+        _sanitize_raw(cfg)
+    except Exception:
+        pass                                # проверка не должна сама стать причиной сброса настроек
+    return cfg
+
+def _sanitize_raw(cfg):
+    for k, d in DEFAULTS.items():
+        v = cfg.get(k)
+        if isinstance(d, list) and not isinstance(v, list):
+            cfg[k] = [v] if isinstance(v, str) and v.strip() else copy.deepcopy(d)
+        elif isinstance(d, dict) and not isinstance(v, dict):
+            cfg[k] = copy.deepcopy(d)
+        elif isinstance(d, str) and not isinstance(v, str):
+            cfg[k] = "" if v is None else str(v)
+    for k, (lo, hi) in _INT_KEYS.items():
+        try:
+            cfg[k] = min(hi, max(lo, int(cfg.get(k))))
+        except Exception:
+            cfg[k] = DEFAULTS[k]
+    cfg["categories"] = [c for c in cfg["categories"] if isinstance(c, dict) and c.get("key")] or copy.deepcopy(DEFAULT_CATEGORIES)
+    for c in cfg["categories"]:
+        if not isinstance(c.get("words"), list):
+            c["words"] = []
+    cfg["shifts"] = [s for s in cfg["shifts"] if isinstance(s, dict)]
+    pr = cfg["priority"]
+    for k, d in DEFAULT_PRIORITY.items():
+        if k in pr and not isinstance(pr[k], type(d)):
+            pr[k] = copy.deepcopy(d)
+    for p, v in list((pr.get("sla") or {}).items()):
+        try:
+            pr["sla"][p] = max(1, int(v))
+        except Exception:
+            pr["sla"][p] = DEFAULT_PRIORITY["sla"].get(p, 60)
+    for k in ("auto_reply_templates", "auto_reply_subject"):
+        for kk, vv in list(cfg[k].items()):
+            if k == "auto_reply_templates" and not isinstance(vv, dict):
+                cfg[k][kk] = {}
+            elif k == "auto_reply_subject" and not isinstance(vv, str):
+                cfg[k][kk] = ""
 
 _REMOVED_WORDS = {'rent': ['коммерческ', 'промо-акци', 'свободн площад', 'площадк', 'площадь', 'площад', 'вакантн', 'vacant'], 'hr': ['hr'], 'marketing': ['маркетингу', 'событи', 'праздник', 'декор', 'афиш', 'сотрудничеств', 'партнерств', 'партнёрств', 'hamkorlik', 'ҳамкорлик', 'хамкорлик', 'partnership', 'collaboration', 'activation', 'шоу']}   # слова прежних версий, дававшие ложные срабатывания
 
@@ -239,8 +297,7 @@ def get():
 def save(new_values: dict):
     global _cfg
     with _lock:
-        # изменения — в копию; в памяти они появятся только после успешной записи на диск
-        cfg = copy.deepcopy(_cfg if _cfg is not None else DEFAULTS)
+        cfg = _cfg or copy.deepcopy(DEFAULTS)
         for k, v in new_values.items():
             if k in DEFAULTS:
                 cfg[k] = v
@@ -262,27 +319,11 @@ def save(new_values: dict):
                 trem[k] = [w for w in DEFAULTS.get(k) or [] if w.rstrip() not in have]
         cfg["threat_removed"] = trem
         cfg.pop("_config_error", None)
-        # запись через временный файл: обрыв питания посреди записи не портит config.json
-        # (битый файл = программа в демо-режиме без контроля почты и угроз)
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({k: v for k, v in cfg.items() if not k.startswith("_")}, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, CONFIG_PATH)
-        if _cfg is None:
-            _cfg = cfg
-        else:                              # тот же объект: Engine и OutlookSource держат ссылку на него
-            _cfg.clear()
-            _cfg.update(cfg)
-        return _cfg
+        _sanitize(cfg)
+        _write(cfg)
+        _cfg = cfg
+        return cfg
 
 def public():
-    """Настройки для интерфейса. Ключ API ИИ не отдаётся — только признак, что он сохранён."""
-    c = copy.deepcopy(get())
-    c["ai_api_key_set"] = bool((c.get("ai_api_key") or "").strip())
-    c["ai_api_key"] = ""
-    import ai
-    c["ai_models"] = ai.MODELS
-    c["ai_default_hints"] = ai.DEFAULT_HINTS
-    return c
+    """Настройки для интерфейса (секретов в конфиге нет)."""
+    return copy.deepcopy(get())

@@ -12,20 +12,10 @@ _PIN_LOCK = threading.Lock()
 mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("application/javascript", ".js")
 
-def make_handler(engine, ui_dir, reports_dir, port=8791):
-    hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
+def make_handler(engine, ui_dir, reports_dir):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
-
-        def _foreign(self):
-            """Запрос не с экрана программы. Чужой сайт, открытый в браузере ресепшн (ссылка из письма!), мог бы
-            нажать «Я сообщил в СБ» и выключить сирену или прочитать почту через подмену DNS. Пускаем только
-            запросы на 127.0.0.1/localhost с этим портом; у POST источник (Origin) — сама программа."""
-            if (self.headers.get("Host") or "").lower() not in hosts:
-                return True
-            origin = (self.headers.get("Origin") or "").lower()
-            return bool(origin) and origin not in {"http://" + h for h in hosts}
 
         # ---- helpers ----
         def _json(self, obj, code=200):
@@ -74,7 +64,7 @@ def make_handler(engine, ui_dir, reports_dir, port=8791):
 
         # ---- PIN администратора: настройки, журнал, остановка программы ----
         PROTECTED = {"/api/settings", "/api/log", "/api/quit", "/api/outlook-diag", "/api/test-sound",
-                     "/api/telegram-chats", "/api/test-telegram", "/api/test-ai"}
+                     "/api/telegram-chats", "/api/test-telegram"}
 
         def _pin_ok(self, p):
             if p not in self.PROTECTED:
@@ -98,12 +88,25 @@ def make_handler(engine, ui_dir, reports_dir, port=8791):
             self._json({"error": "pin", "message": "Нужен PIN администратора"}, 403)
             return False
 
+        def _local(self):
+            """Запросы принимаются только с экрана самой программы (http://127.0.0.1:порт). Чужая страница, открытая
+            в браузере на этом компьютере, не может «нажимать» кнопки программы и читать письма."""
+            port = self.server.server_address[1]
+            names = ("127.0.0.1:%d" % port, "localhost:%d" % port)
+            host = (self.headers.get("Host") or "").strip().lower()
+            origin = (self.headers.get("Origin") or "").strip().lower()
+            if (host and host not in names) or (origin and origin not in ["http://" + n for n in names]):
+                self._json({"error": "forbidden", "message": "Запрос не с экрана программы"}, 403)
+                return False
+            return True
+
         # ---- GET ----
         def do_GET(self):
-            if self._foreign():
-                return self._json({"error": "forbidden"}, 403)
             try:
-                self._get()
+                if self._local():
+                    self._get()
+            except (ConnectionError, TimeoutError):
+                pass                          # вкладку закрыли, не дождавшись ответа, — это не ошибка программы
             except Exception as e:
                 engine._log("Ошибка запроса GET %s: %s" % (self.path[:80], traceback.format_exc()[-300:]))
                 try:
@@ -112,12 +115,11 @@ def make_handler(engine, ui_dir, reports_dir, port=8791):
                     pass
 
         def do_POST(self):
-            if self._foreign():
-                engine._log("Отклонён запрос не с экрана программы: %s (Origin: %s, Host: %s)" % (
-                    self.path[:60], (self.headers.get("Origin") or "")[:80], (self.headers.get("Host") or "")[:80]))
-                return self._json({"error": "forbidden"}, 403)
             try:
-                self._post()
+                if self._local():
+                    self._post()
+            except (ConnectionError, TimeoutError):
+                pass
             except Exception as e:
                 engine._log("Ошибка запроса POST %s: %s" % (self.path[:80], traceback.format_exc()[-300:]))
                 try:
@@ -194,9 +196,6 @@ def make_handler(engine, ui_dir, reports_dir, port=8791):
                     return self._json({"ok": True})
                 except Exception as e:
                     return self._json({"ok": False, "error": str(e)[:300]})
-            if p == "/api/test-ai":
-                ok, text = engine.test_ai()
-                return self._json({"ok": ok, "text": text})
             if p == "/api/demo":
                 return self._json({"ok": engine.demo(b.get("action"))})
             if p == "/api/quit":
@@ -224,6 +223,6 @@ class _ExclusiveServer(ThreadingHTTPServer):
         super().server_bind()
 
 def serve(engine, ui_dir, reports_dir, port):
-    srv = _ExclusiveServer(("127.0.0.1", port), make_handler(engine, ui_dir, reports_dir, port))
+    srv = _ExclusiveServer(("127.0.0.1", port), make_handler(engine, ui_dir, reports_dir))
     srv.daemon_threads = True
     return srv

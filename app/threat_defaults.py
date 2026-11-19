@@ -12,7 +12,6 @@ HARD = [
     r"\bподо?ж(ог|ечь|жем|гу|гем|ги|гут|жет)\b", r"\bсожг", r"\bсожж", r"\bгранат(а|ы|у|ой|ами)\b",   # подожгу / поджог
     r"\bтротил", r"\bдетонат", r"\bсмертник", r"\bшахид", r"\bджихад", r"\bоружи", r"\bпистолет", r"\bрезн(я|ю|и|ей)\b",
     r"\bвсе умр(ете|ёте|ут)\b", r"\bвы умр(ете|ёте)\b",
-    r"\b(всех|вас|тебя) (за|пере)реж", r"\b(за|пере)реж(у|ем|ут) (всех|вас|тебя)\b", r"\bвзлет(ит|ят|ите) на воздух",
     # узбекский латиница
     r"\bbomba", r"\bportla", r"\bmina bor\b", r"\bmina qo['’`]?y", r"\bminalar\b", r"\bminala", r"\botish(ma)?\b", r"\bterror", r"\bterakt",
     r"\bgarovga", r"\bo['’`]?ldir", r"\buldir", r"\bzaharla", r"\bgranata", r"\bqurol",
@@ -28,7 +27,6 @@ HARD = [
     r"\bkill (you|them|everyone|all|people)\b", r"\bpoison (the|you|your)\b", r"\bgrenade", r"\bmassacre",
     r"\bweapon", r"\bpistol", r"\brifle", r"\bjihad", r"\bterrorist", r"\bblow (it |you |them |everything )?up\b",
     r"\b(will|gonna|going to) (all )?die\b",
-    r"\bmurder (you|them|everyone|all|people)\b", r"\bshoot (it |the \w+ )?up\b", r"\bstab (you|them|everyone|people)\b",
     r"\bburn (it |you |them |everything |the \w+ |your \w+ )?down\b", r"\bset (it |you |them |the \w+ |your \w+ )?on fire\b",
     r"\bset fire\b", r"\barson\b",                                          # поджог
 ]
@@ -48,7 +46,6 @@ EXCEPTIONS = [
 
 # --- Скрытая угроза (жёлтый экран): запугивание и намерение без явных слов ---
 SOFT = [
-    "зарежу", "зарежем", "перережу", "перережем",
     # русский
     "пожалеете", "пожалеешь", "найдем вас", "найдём вас", "найдем тебя", "найдём тебя", "мало не покажется",
     "последнее предупреждение", "будет плохо", "сдохн", "кровь прольется", "кровь прольётся", "отомст", "месть",

@@ -64,7 +64,7 @@
     var items = state.queue.filter(function (m) { return !catFilter || (m.category || 'general') === catFilter; });
     $('empty').hidden = items.length > 0;
     $('empty-t').textContent = catFilter && c.queue ? 'В этом направлении всё отвечено' : '✓ Все письма отвечены';
-    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : '') + '|' + (m.ai_summary || ''); }).join(';');
+    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : ''); }).join(';');
     if (q.dataset.sig !== sig) {
       q.dataset.sig = sig; q.innerHTML = '';
       items.forEach(function (m) {
@@ -79,7 +79,6 @@
           (m.thread_count > 1 ? '<span class="tag thr">переписка: ' + m.thread_count + ' письма</span>' : '') +
           (m.junk ? '<span class="tag orange">из «Нежелательной почты» — проверьте: настоящее → в Outlook «Не нежелательное», спам → удалить</span>' : '') + (m.night ? '<span class="tag">ночное · срок с ' + ft(m.sla_from) + '</span>' : '') + (m.carried ? '<span class="tag">с прошлой смены</span>' : '') + (m.threat_words && m.threat_words.length ? ((m.threat_level || 2) === 2 ? '<span class="tag red">угроза</span>' : '<span class="tag orange">' + (m.threat_ack_at ? 'проверено, угрозы нет' : 'проверить') + '</span>') : '') + '</div>' +
           '<div class="subj">' + esc(m.subject || '(без темы)') + '</div>' +
-          (m.ai_summary ? '<div class="ai-sum" title="Кратко — определено ИИ">' + esc(m.ai_summary) + '</div>' : '') +
           '<div class="prev">' + esc(m.body_preview || '') + '</div>' +
           (att ? '<div class="atts">' + att + '</div>' : '') + clientNote(m) +
           '<div class="meta">Получено ' + fdt(m.received_at) + (m.auto_replied_at ? ' · <span class="auto">автоответ отправлен ' + ft(m.auto_replied_at) + '</span>' : '') + '</div></div>' +
@@ -252,7 +251,11 @@
 
   // ---------- опрос ----------
   function poll() {
-    api('/api/state').then(function (s) { state = s; render(); }).catch(function () {
+    api('/api/state').then(function (s) {
+      state = s;
+      // сбой отрисовки списков не должен скрыть экран тревоги
+      try { render(); } catch (e) { try { renderThreat(); } catch (e2) {} throw e; }
+    }).catch(function () {
       $('status').className = 'status error'; $('status-text').textContent = 'Программа не отвечает. Запустите «Почта ресепшн» заново.';
     });
   }
@@ -338,13 +341,9 @@
     api('/api/threat-escalate', { id: $('threat').dataset.id }).then(poll);
   });
   $('th-clear').addEventListener('click', function () { api('/api/threat-clear', { id: $('threat').dataset.id }).then(poll); });
-  // id угрозы запоминаем при нажатии «Я сообщил»: обновление экрана раз в 2 с может показать другую угрозу
-  var ackId = null;
-  $('th-ack').addEventListener('click', function () { ackId = $('threat').dataset.id; hide('th-btns-red'); show('th-confirm'); });
-  $('th-no').addEventListener('click', function () { ackId = null; hide('th-confirm'); show('th-btns-red'); });
+  $('th-ack').addEventListener('click', function () { hide('th-btns-red'); show('th-confirm'); });
+  $('th-no').addEventListener('click', function () { hide('th-confirm'); show('th-btns-red'); });
   $('th-yes').addEventListener('click', function () {
-    if (!ackId || ackId !== $('threat').dataset.id) { ackId = null; hide('th-confirm'); show('th-btns-red'); return; }
-    var id = ackId; ackId = null;
-    api('/api/threat-ack', { id: id }).then(function () { hide('th-confirm'); poll(); });
+    api('/api/threat-ack', { id: $('threat').dataset.id }).then(function () { hide('th-confirm'); poll(); });
   });
 })();
