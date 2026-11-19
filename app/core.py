@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import config, notify, threats, matcher, shifts, classify, telegram, autostart, ai
 from store import Store, open_checked
 
-VERSION = "1.37"
+VERSION = "1.38"
 DEMO_FORWARD = "marketing-demo@example.uz"    # адрес пересылки демо-кнопки; в режиме Outlook на него ничего не уходит
 # метки нашего письма-сигнала в СБ; письмо с [0] в теме вернулось в ящик ресепшн (автоответ, группа, пересылка) — без тревоги
 SB_MARKS = ("УГРОЗА: письмо на почту ресепшн", "Сработал сигнал угрозы в почте ресепшн")
@@ -916,19 +916,41 @@ class Engine:
                 "pending": len(self.ai_jobs)}
 
     def _ai_wants(self, rec):
-        """Отправлять ли письмо на второй фильтр. Явная угроза по словарю (красный экран) в ИИ не уходит: тревога
+        return self._ai_skip_reason(rec) is None
+
+    def _ai_skip_reason(self, rec):
+        """None — письмо отправляется на второй фильтр; иначе причина, почему нет ("" — причина не для показа:
+        рассылка, уже отвечено, уже проверено ИИ). Явная угроза по словарю (красный экран) в ИИ не уходит: тревога
         уже поднята, и снять её ИИ не может. Письма коллег своего домена не отправляются (внутренняя переписка)."""
         if not rec or rec.get("kind") != "in" or rec.get("ignored") or rec.get("ai_state") or rec.get("answered_at"):
-            return False
-        if (rec.get("threat_level") or 0) == 2 or rec.get("threat_ack_at") or rec.get("no_reply_reason"):
-            return False
-        if not self.ai.enabled() or self._ai_paused():
-            return False
+            return ""
+        if rec.get("no_reply_reason"):
+            return ""
+        if (rec.get("threat_level") or 0) == 2:
+            return "явная угроза по словарю — красный экран уже поднят, ИИ его не снимает"
+        if rec.get("threat_ack_at"):
+            return ""
+        if not self.ai.enabled():
+            if not self.cfg.get("ai_enabled"):
+                return ("в Настройках не стоит галочка «Включить проверку писем ИИ» (или настройки не сохранены "
+                        "кнопкой «Сохранить настройки»)")
+            return self.ai.why_off() or "ИИ не настроен"
+        if self._ai_paused():
+            return "ИИ временно на паузе после сбоев (%s)" % self.ai_fail["msg"]
         s = (rec.get("sender") or "").lower()
         own_dom = {a.split("@", 1)[1] for a in self._own()}
         if "@" in s and s.split("@", 1)[1] in own_dom:
-            return False
-        return True
+            return "письмо коллеги своего домена (@%s) — внутренняя переписка в ИИ не отправляется" % s.split("@", 1)[1]
+        return None
+
+    def _ai_note_skip(self, rec, why):
+        """Письмо не ушло в ИИ: причина — в списке «что отправлялось в ИИ» и в журнале (если ИИ вообще используется)."""
+        if not why or not (self.cfg.get("ai_enabled") or (self.cfg.get("ai_api_key") or "").strip()):
+            return
+        self.ai_log.append({"at": _iso(datetime.now()), "sent": "Тема: " + (rec.get("subject") or "(без темы)"),
+                            "hidden": {}, "result": "НЕ отправлено в ИИ: " + why, "skipped": True})
+        self._log("Письмо «%s» (%s) в ИИ не отправлено: %s — обработано по словарю"
+                  % (rec.get("subject") or "", rec.get("sender") or "", why))
 
     def _ai_hold(self, m, by_id):
         """True — письмо отправлено (или уже ждёт) на второй фильтр: пересылка и автоответ откладываются."""
@@ -937,7 +959,9 @@ class Engine:
             return False
         if rec.get("ai_state") == "pending":
             return True
-        if not self._ai_wants(rec):
+        why = self._ai_skip_reason(rec)
+        if why is not None:
+            self._ai_note_skip(rec, why)
             return False
         self._ai_submit(rec, by_id.get(rec["id"]) or m)
         return True
@@ -1140,7 +1164,16 @@ class Engine:
         return True
 
     def ai_test(self):
-        return self.ai.test()
+        text = self.ai.test()
+        if not self.cfg.get("ai_enabled"):
+            text += (" НО проверка писем ВЫКЛЮЧЕНА: поставьте галочку «Включить проверку писем ИИ» и нажмите "
+                     "«Сохранить настройки» — иначе письма в ИИ не отправляются.")
+        elif self._ai_paused():
+            text += " ИИ был на паузе после сбоев — пауза снята, следующие письма уйдут в ИИ."
+            self.ai_fail.update(n=0, until=0)
+        else:
+            text += " Проверка писем включена: новые письма будут уходить в ИИ."
+        return text
 
     def ai_sent(self):
         """Что уходило в ИИ (последние письма, после скрытия личных данных) — для Настроек."""

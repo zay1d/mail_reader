@@ -358,5 +358,45 @@ class AnalyzerChecks(unittest.TestCase):
         self.assertLess(len(text), ai.MAX_CHARS + 200)
 
 
+
+class SkipReasons(AICase):
+    """Письмо не ушло в ИИ — причина видна в списке «что отправлялось» и в журнале."""
+    def test_checkbox_off_is_explained(self):
+        self.eng.apply_settings({"ai_enabled": False})
+        self.ai.on = False
+        self.src.add("client@mail.ru", "Аренда", "Хотим взять в аренду помещение под бутик.")
+        self.eng.poll()
+        item = self.eng.ai_sent()[0]
+        self.assertTrue(item["skipped"])
+        self.assertIn("галочка «Включить проверку писем ИИ»", item["result"])
+        self.assertIn("в ИИ не отправлено", self.journal())
+        self.assertEqual(len(self.src.replies), 1)                  # письмо обработано по словарю
+
+    def test_colleague_letter_is_explained(self):
+        self.src.add("k.sabitova@tcmall.uz", "Вопрос", "Коллеги, подскажите.")
+        self.eng.poll()
+        self.assertIn("коллеги своего домена", self.eng.ai_sent()[0]["result"])
+
+    def test_no_ai_settings_no_noise(self):
+        self.eng.apply_settings({"ai_enabled": False, "ai_api_key": ""})
+        self.ai.on = False
+        self.src.add("client@mail.ru", "Аренда", "Хотим взять в аренду помещение под бутик.")
+        self.eng.poll()
+        self.assertEqual(self.eng.ai_sent(), [])
+        self.assertNotIn("в ИИ не отправлено", self.journal())
+
+    def test_newsletter_is_not_listed(self):
+        self.src.add("noreply@shop.uz", "Скидки", "Только до воскресенья!")
+        self.eng.poll()
+        self.assertEqual(self.eng.ai_sent(), [])
+
+    def test_ai_test_warns_when_checking_is_off(self):
+        self.eng.ai.test = lambda: "Связь с ИИ есть."
+        self.eng.apply_settings({"ai_enabled": False})
+        self.assertIn("ВЫКЛЮЧЕНА", self.eng.ai_test())
+        self.eng.apply_settings({"ai_enabled": True})
+        self.assertIn("включена", self.eng.ai_test())
+
+
 if __name__ == "__main__":
     unittest.main()
