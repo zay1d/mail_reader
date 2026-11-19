@@ -176,7 +176,9 @@ def make_handler(engine, ui_dir, reports_dir):
                 return self._json(engine.close_shift(b.get("by")))
             if p == "/api/settings":
                 engine.apply_settings(b)
-                return self._json({"ok": True})
+                # дата «Учитывать письма начиная с» могла быть поставлена программой (первое включение Outlook):
+                # страница должна её показать, иначе следующее «Сохранить» стёрло бы её пустым полем
+                return self._json({"ok": True, "count_from": engine.cfg.get("count_from") or ""})
             if p == "/api/test-sound":
                 import notify
                 notify.test_sound()

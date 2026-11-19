@@ -8,6 +8,7 @@ import config, notify, threats, matcher, shifts, classify, telegram, autostart
 from store import Store, open_checked
 
 VERSION = "1.35"
+DEMO_FORWARD = "marketing-demo@example.uz"    # адрес пересылки демо-кнопки; в режиме Outlook на него ничего не уходит
 # метки нашего письма-сигнала в СБ; письмо с [0] в теме вернулось в ящик ресепшн (автоответ, группа, пересылка) — без тревоги
 SB_MARKS = ("УГРОЗА: письмо на почту ресепшн", "Сработал сигнал угрозы в почте ресепшн")
 
@@ -166,6 +167,13 @@ class Engine:
             self._log("Адрес ящика изменён — переподключение к Outlook")
         if self.cfg.get("mode") != old_mode:
             if old_mode == "demo":
+                cats = self.cfg.get("categories") or []
+                if any((c.get("forward_to") or "").strip().lower() == DEMO_FORWARD for c in cats):
+                    for c in cats:              # адрес, записанный демо-кнопкой «Письмо маркетингу», убрать из настроек
+                        if (c.get("forward_to") or "").strip().lower() == DEMO_FORWARD:
+                            c["forward_to"] = ""
+                    self.cfg = config.save({"categories": cats})
+                    self._log("Демо-адрес пересылки убран из направлений")
                 self.store.purge_demo()
                 self.threat_opened.clear(); self.last_alert.clear()
                 self._log("Режим изменён на Outlook: демо-письма и тестовые смены удалены")
@@ -593,7 +601,10 @@ class Engine:
     def forward_addr(self, category):
         for c in self.cfg.get("categories") or []:
             if c.get("key") == category:
-                return (c.get("forward_to") or "").strip()
+                to = (c.get("forward_to") or "").strip()
+                if to.lower() == DEMO_FORWARD and self.cfg.get("mode") != "demo":
+                    return ""       # демо-кнопка записала этот адрес в настройки: настоящие письма на него не пересылаем
+                return to
         return ""
 
     def _auto_forward(self, m):
@@ -689,10 +700,22 @@ class Engine:
                 to = (self.cfg.get("security_email") or "").strip()
                 if use_tg and not st["tg"]:
                     try:
-                        telegram.send_message(self.cfg.get("telegram_bot_token"), self.cfg.get("telegram_chat_id"),
-                                              telegram.threat_text(m, self.cfg.get("reception_phone")))
-                        st["tg"] = True
-                        self._log("Тревога отправлена в Telegram СБ")
+                        failed = telegram.send_message(self.cfg.get("telegram_bot_token"),
+                                                       st.get("tg_left") or self.cfg.get("telegram_chat_id"),
+                                                       telegram.threat_text(m, self.cfg.get("reception_phone")))
+                        if not failed:
+                            st["tg"] = True
+                            self._log("Тревога отправлена в Telegram СБ")
+                        else:            # части получателей не дошло (бот удалён из группы, ошибка в ID) — повторить им
+                            st["tg_tries"] = st.get("tg_tries", 0) + 1
+                            who = "; ".join("%s: %s" % kv for kv in failed.items())[:300]
+                            if st["tg_tries"] >= 5:
+                                st["tg"] = True
+                                self._log("ВНИМАНИЕ: тревога в Telegram дошла НЕ ВСЕМ получателям, повторы прекращены. "
+                                          "Не получили: " + who)
+                            else:
+                                st["tg_left"] = ",".join(failed)
+                                self._log("ВНИМАНИЕ: тревога в Telegram дошла не всем (повтор им через 2 мин). Не получили: " + who)
                     except Exception as e:
                         self._log("Telegram: не удалось отправить тревогу (повтор через 2 мин): " + str(e)[:200])
                 if to and not st["mail"]:
@@ -709,6 +732,9 @@ class Engine:
                     except Exception as e:
                         self._log("Не удалось отправить письмо в СБ (повтор через 2 мин): " + str(e)[:200])
                 if (st["tg"] or not use_tg) and (st["mail"] or not to):
+                    if not use_tg and not to:
+                        self._log("ВНИМАНИЕ: сигнал об угрозе в службу безопасности НЕ отправлен — в Настройках не заданы "
+                                  "ни Telegram, ни почта СБ. Тревога только на экране ресепшн: звоните в СБ")
                     self.store.set_threat_notified(m["id"])
                     self.sec_sent.pop(m["id"], None)
 
@@ -846,8 +872,11 @@ class Engine:
             return "Диагностика не выполнена: " + str(e)[:300]
 
     def test_telegram(self):
-        telegram.send_message(self.cfg.get("telegram_bot_token"), self.cfg.get("telegram_chat_id"),
-                              "✅ Проверка связи: почта ресепшн TCM подключена к группе. Сюда будут приходить сигналы об угрозах.")
+        failed = telegram.send_message(self.cfg.get("telegram_bot_token"), self.cfg.get("telegram_chat_id"),
+                                       "✅ Проверка связи: почта ресепшн TCM подключена к группе. Сюда будут приходить сигналы об угрозах.")
+        if failed:                 # кому-то не дошло — проверка не должна показывать «успех»
+            raise RuntimeError("сообщение дошло не всем получателям. Не получили: "
+                               + "; ".join("%s: %s" % kv for kv in failed.items()))
         return True
 
     def state(self):
@@ -1084,7 +1113,7 @@ class Engine:
             cats = self.cfg.get("categories") or []
             for c in cats:
                 if c.get("key") == "marketing" and not c.get("forward_to"):
-                    c["forward_to"] = "marketing-demo@example.uz"
+                    c["forward_to"] = DEMO_FORWARD
             self.apply_settings({"categories": cats})
             self.source.simulate_marketing()
         elif action == "reply":

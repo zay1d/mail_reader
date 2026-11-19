@@ -7,20 +7,21 @@ def _ids(chat_id):
     return [x.strip() for x in str(chat_id or "").replace(";", ",").split(",") if x.strip()]
 
 def send_message(token, chat_id, text, timeout=10):
-    """chat_id — один ID или несколько через запятую (группа СБ + личные чаты)."""
+    """chat_id — один ID или несколько через запятую (группа СБ + личные чаты).
+    Никому не дошло — исключение. Возвращает {получатель: ошибка} для тех, кому не дошло (пусто = дошло всем)."""
     token = (token or "").strip()
     ids = _ids(chat_id)
     if not token or not ids:
         raise RuntimeError("Не задан токен бота или получатели")
-    errors = []
+    failed = {}
     for cid in ids:
         try:
             _send_one(token, cid, text, timeout)
         except Exception as e:
-            errors.append("%s: %s" % (cid, str(e)[:80]))
-    if len(errors) == len(ids):
-        raise RuntimeError("; ".join(errors))
-    return True
+            failed[cid] = str(e).replace(token, "<токен>")[:80]      # токен бота не должен попасть в журнал
+    if len(failed) == len(ids):
+        raise RuntimeError("; ".join("%s: %s" % kv for kv in failed.items()))
+    return failed                  # пусто — доставлено всем; иначе {получатель: ошибка} — кому не дошло
 
 def list_chats(token, timeout=10):
     """Кто писал боту (для подбора ID получателей): [{chat_id, name, type}]."""

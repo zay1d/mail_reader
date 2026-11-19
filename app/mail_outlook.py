@@ -369,6 +369,7 @@ class OutlookSource:
             it = items.GetFirst()
         except Exception as e:
             st["error"] = "GetFirst: " + _err(e)
+            st["errors"] += 1      # папка не прочитана: опрос неполный, «пропавшие» письма с очереди не снимать
             return
         n = old_run = 0
         prev = None
@@ -414,8 +415,14 @@ class OutlookSource:
                 st["errors"] += 1
             try:
                 it = items.GetNext()
-            except Exception:
+            except Exception as e:
+                st["error"] = "GetNext: " + _err(e)
+                st["errors"] += 1  # чтение папки оборвалось на середине: остальные письма не прочитаны
                 break
+        if it is not None and n >= limit:
+            # предел чтения: в папке остались непрочитанные элементы — опрос неполный, это видно в статусе
+            st["error"] = "прочитано только %d элементов папки (предел) — остальные письма не просмотрены" % n
+            st["errors"] += 1
         st["seen"] = n
 
     def _subfolders(self, folder, depth=3):

@@ -100,6 +100,8 @@ def open_checked(path, backup_dir):
         copies = sorted((f for f in os.listdir(backup_dir) if f.startswith("mail-") and f.endswith(".db")), reverse=True)
     for f in copies:
         try:
+            if os.path.getsize(os.path.join(backup_dir, f)) == 0:
+                continue                # пустой файл от неудавшейся копии прежних версий — не копия
             shutil.copy2(os.path.join(backup_dir, f), path)
             s = _open_ok(path)
         except Exception:
@@ -191,12 +193,22 @@ class Store:
         path = os.path.join(folder, name)
         if os.path.exists(path):
             return None
-        with self.lock:
-            dst = sqlite3.connect(path)
-            try:
-                self.con.backup(dst)
-            finally:
-                dst.close()
+        tmp = path + ".tmp"
+        try:
+            with self.lock:
+                dst = sqlite3.connect(tmp)
+                try:
+                    self.con.backup(dst)
+                finally:
+                    dst.close()
+            os.replace(tmp, path)       # копия появляется под своим именем только целиком
+        except Exception:
+            try:                        # сбой (диск полон, ошибка чтения): пустой файл не должен выглядеть копией
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            raise
         old = sorted(f for f in os.listdir(folder) if f.startswith("mail-") and f.endswith(".db"))
         for f in old[:-keep]:
             try:

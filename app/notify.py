@@ -60,15 +60,17 @@ def configure(sound=True, toast=True):
     _enabled["toast"] = bool(toast)
 
 def _play(path, loop=False):
+    """True — звук запущен."""
     if not winsound or not _enabled["sound"] or not path:
-        return
+        return False
     flags = winsound.SND_FILENAME | winsound.SND_ASYNC
     if loop:
         flags |= winsound.SND_LOOP
     try:
         winsound.PlaySound(path, flags)
+        return True
     except Exception:
-        pass
+        return False
 
 def chime():
     with _lock:
@@ -84,8 +86,9 @@ def siren_start():
     global _siren_on
     with _lock:
         if not _siren_on:
-            _siren_on = True
-            _play(_paths.get("siren"), loop=True)
+            # не запустилась (нет звукового устройства, звук выключен в Настройках) — следующая попытка через 2 с:
+            # раньше флаг ставился заранее, и сирена молчала до конца тревоги
+            _siren_on = _play(_paths.get("siren"), loop=True)
 
 def siren_stop():
     global _siren_on
