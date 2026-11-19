@@ -51,6 +51,35 @@ def _single_instance(port):
     except Exception:
         return True
 
+def _restart():
+    """Запустить новую копию программы и завершить эту (зависший вызов Outlook иначе не прервать)."""
+    args = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(__file__)]
+    args += ["--no-browser", "--after-restart"]
+    try:
+        import subprocess
+        flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0     # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(args, close_fds=True, creationflags=flags, cwd=config.BASE,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        _fatal("Перезапуск после зависания не удался: %s" % e)
+        return
+    os._exit(0)
+
+def _watch(engine):
+    """Сторож зависшего опроса: Outlook не отвечает 3 мин — звук и уведомление, 5 мин — перезапуск программы."""
+    last = time.time()
+    while True:
+        time.sleep(15)
+        now = time.time()
+        if now - last > 90:               # компьютер спал: это не зависание, отсчёт заново
+            engine.heartbeat = now
+        last = now
+        try:
+            if engine.watch_stall(now):
+                _restart()
+        except Exception:
+            pass
+
 def main():
     base = config.BASE
     cfg = config.load()
@@ -59,6 +88,12 @@ def main():
     except Exception:
         port = 8791
     url = "http://127.0.0.1:%d/" % port
+    if "--after-restart" in sys.argv:     # перезапуск после зависания: дождаться, пока прежняя копия освободит порт
+        for _ in range(60):
+            if not _alive(port):
+                break
+            time.sleep(0.5)
+        time.sleep(1.5)
     if not _single_instance(port) or _alive(port):   # уже запущено (двойной клик, сторож, автозапуск)
         if "--watchdog" not in sys.argv:
             for _ in range(20):           # первая копия ещё запускается — дождаться экрана
@@ -76,7 +111,17 @@ def main():
         if not os.path.isfile(os.path.join(ui_dir, "index.html")):
             raise RuntimeError("Не найдена папка ui рядом с программой (%s). Восстановите папку из установочного архива." % ui_dir)
         try:
-            srv = serve(engine, ui_dir, reports_dir, port)
+            srv = None
+            # после перезапуска порт прежней копии освобождается не мгновенно — ждём до 90 с
+            for attempt in range(45 if "--after-restart" in sys.argv else 1):
+                try:
+                    srv = serve(engine, ui_dir, reports_dir, port)
+                    break
+                except OSError as e:
+                    err = e
+                    time.sleep(2)
+            if srv is None:
+                raise err
         except OSError as e:
             raise RuntimeError("Порт %d занят другой программой (%s). Закройте её или смените порт в config.json." % (port, e))
     except Exception as e:
@@ -84,6 +129,7 @@ def main():
         return
     threading.Thread(target=engine.loop, daemon=True).start()
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=_watch, args=(engine,), daemon=True).start()
     try:
         print("Почта ресепшн: " + url)
     except Exception:

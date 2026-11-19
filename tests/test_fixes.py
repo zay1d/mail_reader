@@ -5,7 +5,7 @@ import os, unittest, sqlite3
 from datetime import datetime, timedelta
 import helpers
 from helpers import make_engine, cleanup, set_forward
-import notify, telegram, store as store_mod
+import notify, telegram, shifts, store as store_mod
 from mail_outlook import OutlookSource
 
 
@@ -249,6 +249,146 @@ class Backup(unittest.TestCase):
         self.assertIn("mail-2026-01-01.db", note)
         self.assertEqual(len(s2._rows("SELECT id FROM messages")), 3)
         s2.con.close()
+
+
+
+class Decisions1911(unittest.TestCase):
+    """Решения 19.11 по шести найденным ошибкам поведения."""
+    def setUp(self):
+        self.eng, self.src, self.tmp = make_engine({"security_email": "sb@tcmall.uz"})
+
+    def tearDown(self):
+        cleanup(self.eng, self.tmp)
+
+    def queue_ids(self):
+        return [m["id"] for m in self.eng.store.queue(True)]
+
+    # п.1 — явная угроза с адресом нашего же ящика
+    def test_threat_with_our_own_address_raises_red_alarm(self):
+        m = self.src.add("contact@tcmall.uz", "Внимание", "В вашем торговом центре заложена бомба.")
+        self.eng.poll(); self.eng.check_threats()
+        self.assertEqual(self.eng.store.get(m["id"])["threat_level"], 2)
+        self.assertEqual([t["id"] for t in self.eng.store.threats_pending()], [m["id"]])
+        self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])
+        self.assertEqual(self.src.replies, [])
+
+    def test_our_alarm_and_report_coming_back_do_not_raise_alarm(self):
+        self.src.add("contact@tcmall.uz", "УГРОЗА: письмо на почту ресепшн — Внимание", "Сработал сигнал. В здании бомба.")
+        self.src.add("contact@tcmall.uz", "Отчёт ресепшн по почте: Смена 1, 19.11.2026", "Сигналы угрозы: бомба")
+        self.src.add("mailer-daemon@mail.example.com", "Undeliverable: УГРОЗА: письмо на почту ресепшн — Внимание", "бомба")
+        self.eng.poll()
+        self.assertEqual(self.eng.store.threats_pending(), [])
+
+    def test_stranger_cannot_silence_alarm_with_our_subject(self):
+        m = self.src.add("anon@example.com", "УГРОЗА: письмо на почту ресепшн", "В здании бомба, взрыв через час.")
+        self.eng.poll()
+        self.assertEqual(self.eng.store.get(m["id"])["threat_level"], 2)
+
+    # п.2 — фильтр «не считать входящими»
+    def test_filter_does_not_hide_real_letters(self):
+        a = self.src.add("client@mail.ru", "Жалоба: администратора нет на месте уже час", "Стою у стойки, никого нет.")
+        b = self.src.add("info@bounce-park.uz", "Вопрос по аренде", "Хотим арендовать помещение под батутный парк.")
+        c = self.src.add("client2@mail.ru", "Письмо не доставлено арендатору — что делать?", "Подскажите.")
+        self.eng.poll()
+        for m in (a, b, c):                                                # не скрыты как «автописьмо»
+            self.assertIsNone(self.eng.store.get(m["id"])["ignored"], m["subject"])
+        self.assertIn(a["id"], self.queue_ids())
+
+    def test_filter_still_hides_auto_mail(self):
+        import matcher
+        cfg = self.eng.cfg
+        for sender, name, subj in (("noreply@shop.uz", "Shop", "Скидки"),
+                                   ("bounces+123@mail.shop.uz", "Shop", "Новости"),
+                                   ("a@b.uz", "Microsoft Teams Notifications", "Вас упомянули"),
+                                   ("a@b.uz", "Иван", "Автоматический ответ: Вопрос"),
+                                   ("a@b.uz", "Иван", "RE: Нет на месте: Вопрос"),
+                                   ("a@b.uz", "Ivan", "Out of office until Monday"),
+                                   ("postmaster@b.uz", "", "Delivery Status Notification (Failure)")):
+            self.assertTrue(matcher.is_ignored(sender, name, subj, cfg), (sender, subj))
+        custom = dict(cfg, ignore_senders=["@partner.uz", "shop.uz"], ignore_subjects=["*скидки"])
+        self.assertTrue(matcher.is_ignored("ivan@partner.uz", "", "Вопрос", custom))
+        self.assertTrue(matcher.is_ignored("info@shop.uz", "", "Вопрос", custom))
+        self.assertTrue(matcher.is_ignored("x@y.uz", "", "Большие скидки недели", custom))
+        self.assertEqual(matcher.is_ignored("x@y.uz", "", "Вопрос про аренду", custom), "")
+
+    # п.3 — «Ответить» с заменой адресата на коллегу
+    def test_reply_redirected_to_colleague_keeps_letter_in_queue(self):
+        m = self.src.add("client@mail.ru", "Вопрос по карте", "Можно ли купить подарочную карту?", minutes_ago=10)
+        self.eng.poll()
+        self.src.add_out(["director@tcmall.uz"], "RE: Вопрос по карте", conv_id=m["conv_id"], minutes_ago=5)
+        self.eng.poll()
+        rec = self.eng.store.get(m["id"])
+        self.assertEqual(self.queue_ids(), [m["id"]])
+        self.assertFalse(rec["answered_at"])
+        self.assertEqual(rec["self_reply_to"], "director@tcmall.uz")      # красная пометка на карточке
+        self.src.add_out(["client@mail.ru"], "RE: Вопрос по карте", conv_id=m["conv_id"])
+        self.eng.poll()
+        self.assertEqual(self.queue_ids(), [])
+
+    def test_reply_to_other_external_address_still_counts(self):
+        m = self.src.add("client@mail.ru", "Вопрос", "Ответьте, пожалуйста, на мой рабочий адрес.", minutes_ago=10)
+        self.eng.poll()
+        self.src.add_out(["client.work@company.uz"], "RE: Вопрос", conv_id=m["conv_id"], minutes_ago=5)
+        self.eng.poll()
+        self.assertEqual(self.queue_ids(), [])
+
+    # п.4 — смены через полночь, «00:00», порядок смен
+    def test_shift_hours(self):
+        D = lambda h, m=0, day=2: datetime(2026, 11, day, h, m)
+        night = dict(self.eng.cfg, shifts=[{"name": "День", "start": "08:00", "end": "20:00"},
+                                           {"name": "Ночь", "start": "20:00", "end": "08:00"}])
+        for t in (D(21), D(23, 59), D(3), D(12)):
+            self.assertEqual(shifts.sla_start(t, night), t, t)             # круглосуточно: срок с момента письма
+        zero = dict(self.eng.cfg, shifts=[{"name": "Смена 1", "start": "09:00", "end": "17:00"},
+                                          {"name": "Смена 2", "start": "16:00", "end": "00:00"}])
+        self.assertEqual(shifts.sla_start(D(18, 30), zero), D(18, 30))     # 00:00 как конец = полночь
+        self.assertEqual(shifts.sla_start(D(3), zero), D(9))
+        late = dict(self.eng.cfg, shifts=[{"name": "Смена", "start": "14:00", "end": "02:00"}])
+        self.assertEqual(shifts.sla_start(D(15), late), D(15))
+        self.assertEqual(shifts.sla_start(D(1), late), D(1))               # до 02:00 — ещё вчерашняя смена
+        self.assertEqual(shifts.sla_start(D(5), late), D(14))
+        rev = dict(self.eng.cfg, shifts=[{"name": "Смена 2", "start": "16:00", "end": "24:00"},
+                                         {"name": "Смена 1", "start": "09:00", "end": "17:00"}])
+        self.assertEqual(shifts.sla_start(D(10), rev), D(10))              # порядок строк в настройках не важен
+        self.assertEqual(shifts.sla_start(D(3), rev), D(9))
+        std = dict(self.eng.cfg, shifts=[{"name": "Смена 1", "start": "09:00", "end": "17:00"},
+                                         {"name": "Смена 2", "start": "16:00", "end": "24:00"}])
+        self.assertEqual(shifts.sla_start(D(23, 59), std), D(23, 59))
+        self.assertEqual(shifts.sla_start(D(0, 30), std), D(9))
+        self.assertEqual(shifts.sla_start(D(8, 59), std), D(9))
+
+    # п.5 — зависший опрос
+    def test_stalled_poll_is_noticed_and_restart_requested(self):
+        e = self.eng
+        e.cfg["mode"] = "outlook"; e.loop_running = True
+        t = 1000000.0
+        e.heartbeat = t
+        self.assertFalse(e.watch_stall(t + 60))
+        self.assertFalse(e.watch_stall(t + 200))                           # 3 минуты: сигнал, без перезапуска
+        self.assertIn("почта не проверяется", "\n".join(e.log))
+        self.assertTrue(e.watch_stall(t + 310))                            # 5 минут: перезапуск
+        self.src.progress = t + 305                                        # чтение большой папки идёт — не зависание
+        self.assertFalse(e.watch_stall(t + 310))
+        e.cfg["mode"] = "demo"; e.loop_running = False
+        self.assertEqual(e.stalled_for(t + 9999), 0)
+
+    # п.6 — письмо вернули в Outlook
+    def test_letter_restored_in_outlook_returns_to_queue(self):
+        import core
+        m = self.src.add("client@mail.ru", "Вопрос", "До скольки вы работаете?")
+        self.eng.poll()
+        self.eng.store.mark_no_reply(m["id"], core.GONE)                   # программа сняла: письма не было в Outlook
+        self.assertEqual(self.queue_ids(), [])
+        self.eng.poll()                                                    # письмо снова на месте
+        self.assertEqual(self.queue_ids(), [m["id"]])
+        self.assertEqual(len(self.src.replies), 1)                         # автоответ повторно не уходит
+
+    def test_letter_dismissed_by_staff_does_not_return(self):
+        m = self.src.add("client@mail.ru", "Спасибо", "Спасибо за помощь!")
+        self.eng.poll()
+        self.eng.no_reply(m["id"], "не требует ответа")
+        self.eng.poll()
+        self.assertEqual(self.queue_ids(), [])
 
 
 if __name__ == "__main__":

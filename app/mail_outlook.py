@@ -2,6 +2,7 @@
 """Чтение почты из классического Outlook (COM).
 Ящик ищется в таком порядке: учётная запись с нужным адресом -> хранилище с таким именем ->
 общий ящик (делегирование) -> ящик по умолчанию. Работает с Exchange/Microsoft 365, IMAP и POP."""
+import time
 from datetime import datetime, timedelta
 
 PR_SMTP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001F"
@@ -59,6 +60,7 @@ class OutlookSource:
         self._cache_out = {}
         self.scan = {}             # как читались папки (для диагностики): путь -> сведения
         self.full_scan = set()     # папки, где Outlook не соблюдает порядок «новые сверху» — читать целиком
+        self.progress = 0          # когда в последний раз прочитан очередной элемент папки
         self.last_complete = False # последний опрос прочитал все папки и письма без единой ошибки
 
     # ---------- поиск ящика ----------
@@ -377,6 +379,7 @@ class OutlookSource:
         limit = 5000 if full else 2000
         while it is not None and n < limit:
             n += 1
+            self.progress = time.time()        # чтение идёт (для сторожа зависшего опроса)
             try:
                 cls = it.Class
                 st["classes"][cls] = st["classes"].get(cls, 0) + 1

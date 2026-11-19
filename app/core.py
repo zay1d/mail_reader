@@ -11,6 +11,8 @@ VERSION = "1.35"
 DEMO_FORWARD = "marketing-demo@example.uz"    # адрес пересылки демо-кнопки; в режиме Outlook на него ничего не уходит
 # метки нашего письма-сигнала в СБ; письмо с [0] в теме вернулось в ящик ресепшн (автоответ, группа, пересылка) — без тревоги
 SB_MARKS = ("УГРОЗА: письмо на почту ресепшн", "Сработал сигнал угрозы в почте ресепшн")
+GONE = "удалено из Outlook сотрудником"       # причина снятия с очереди: письмо пропало из папок Outlook
+REPORT_MARK = "Отчёт ресепшн по почте"       # начало темы отчёта смены (shifts.build_report)
 
 def _iso(d):
     return d.strftime("%Y-%m-%dT%H:%M:%S")
@@ -59,6 +61,8 @@ class Engine:
         self.browser_opened_at = 0
         self.pinned_hwnd = 0          # окно тревоги, закреплённое поверх всех окон (красный сигнал)
         self.pin_pause_until = 0      # «Открыть письмо в Outlook» на красном экране — открепить на 90 с
+        self.heartbeat = time.time()  # когда цикл опроса в последний раз подавал признаки жизни
+        self.stall_warned = 0         # когда в последний раз был сигнал «почта не проверяется»
         self.url = "http://127.0.0.1:%d/" % int(self.cfg.get("port") or 8791)
         self._reload_patterns()
         self._make_source()
@@ -307,6 +311,8 @@ class Engine:
         new_letters = []
         rescued = []
         junk_ids = self.store.junk_ids()
+        gone_ids = {r["id"] for r in self.store._rows(
+            "SELECT id FROM messages WHERE kind='in' AND no_reply_reason=? AND answered_at IS NULL", (GONE,))}
         seen = []                          # письма, уже известные базе: «видели сейчас» пишется одним сохранением
         for m in incoming:
             try:
@@ -318,6 +324,10 @@ class Engine:
                         if rec and not rec.get("reply_to") and m.get("reply_to"):
                             self._client_info(m)
                             self.store.set_client(m)
+                    if m["id"] in gone_ids:                   # письмо восстановили (из «Удалённых», из архива)
+                        self.store.undo_no_reply(m["id"])
+                        self._log("Письмо «%s» (%s) снова видно в Outlook — возвращено в очередь"
+                                  % (m.get("subject") or "", m.get("sender") or ""))
                     if m["id"] in junk_ids and not m.get("junk"):
                         self.store.set_junk(m["id"], False)       # сотрудник нажал «Не нежелательное»
                         rescued.append(m)
@@ -346,12 +356,15 @@ class Engine:
                         ign = ""
                     elif level == 1:
                         level, found = 0, []
-                if level and (ign == "своё письмо" or SB_MARKS[0].lower() in (m.get("subject") or "").lower()):
-                    # наш же сигнал в СБ вернулся (автоответ «нет на месте», группа СБ с contact@, недоставка) или письмо
-                    # самого ящика — тревогу НЕ поднимаем, иначе каждый сигнал порождал бы новый (петля)
+                if level and self._own_echo(m, ign):
+                    # наш же сигнал в СБ вернулся (автоответ «нет на месте», группа СБ с contact@, недоставка) или наш
+                    # отчёт смены — тревогу НЕ поднимаем, иначе каждый сигнал порождал бы новый (петля)
                     if level == 2:
-                        self._log("Письмо «%s» — возврат нашего сигнала в СБ или своё письмо, тревога не поднимается" % (m.get("subject") or ""))
+                        self._log("Письмо «%s» — возврат нашего сигнала в СБ или отчёта смены, тревога не поднимается" % (m.get("subject") or ""))
                     level, found = 0, []
+                elif level == 2 and ign == "своё письмо":
+                    # адрес отправителя подделывается: «заложена бомба» от имени нашего же ящика — тревога (решение 19.11)
+                    self._log("Явная угроза в письме с адресом нашего ящика (адрес отправителя мог быть подделан) — тревога")
                 if level == 2 and ign:
                     self._log("Явная угроза от отправителя из списка «не считать входящими» (%s) — тревога всё равно" % ign)
                     ign = ""
@@ -396,7 +409,9 @@ class Engine:
                     if not ids and not matcher.is_forward(subj):
                         # ответ не дошёл до клиента: «Ответить» на заявку с сайта ушло на contact@ (и коллегам) —
                         # письмо остаётся в очереди с красной пометкой; обычному письму — только если ответ ушёл себе
-                        bad = self._self_target(o, cands, only_form=not to_self)
+                        # то же — «Ответить» с заменой адресата на коллегу (все получатели своего домена)
+                        internal = bool(rc) and bool(own) and not matcher.external(rc, own)
+                        bad = self._self_target(o, cands, only_form=not (to_self or internal))
                         for mid in bad:
                             self.store.mark_self_reply(mid, o.get("sent_at"), ", ".join(rc))
                         if bad:
@@ -441,6 +456,7 @@ class Engine:
                 fresh.append(rec)
         self.retry = {k: v for k, v in self.retry.items() if k[1] in {m["id"] for m in fresh}}
         for m in fresh:               # сначала направление и пересылка в отдел, затем автоответ (уходит всем)
+            self.heartbeat = time.time()
             try:
                 self._auto_forward(m)
                 self._auto_reply(m)
@@ -453,6 +469,20 @@ class Engine:
         self.first_poll = False
         self.last_poll = datetime.now()
         self.status = src.status()
+
+    def _own_echo(self, m, ign):
+        """Письмо — возврат нашего же сигнала в СБ или нашего отчёта смены (в них цитируются слова угрозы).
+        Узнаётся по нашей теме, И отправитель должен быть «своим»: наш ящик или домен, почта СБ, автоотправитель
+        (mailer-daemon, автоответ). Чужое письмо с такой темой тревогу не гасит."""
+        subj = (m.get("subject") or "").lower()
+        if SB_MARKS[0].lower() not in subj and REPORT_MARK.lower() not in subj:
+            return False
+        s = (m.get("sender") or "").lower()
+        own = self._own()
+        own_dom = {a.split("@", 1)[1] for a in own}
+        sec = {x.strip().lower() for x in (self.cfg.get("security_email") or "").replace(",", ";").split(";") if x.strip()}
+        return (not s or s in own or s in sec or ("@" in s and s.split("@", 1)[1] in own_dom)
+                or (ign or "").startswith(("автоотправитель", "автописьмо", "своё письмо")))
 
     def _letter_failed(self, m, e):
         """Письмо, на котором споткнулся разбор, не останавливает остальную почту и не теряется: встаёт в очередь
@@ -467,7 +497,8 @@ class Engine:
                 return
             level, found = 0, []
             try:
-                if (m.get("item_class") or 43) != 46 and SB_MARKS[0].lower() not in (m.get("subject") or "").lower():
+                if (m.get("item_class") or 43) != 46 and not self._own_echo(
+                        m, matcher.is_ignored(m.get("sender"), m.get("sender_name"), m.get("subject"), self.cfg)):
                     level, found = self.detector.analyze((m.get("subject") or "") + "\n" + (m.get("body") or ""))
                     if level == 1 and m.get("junk"):
                         level, found = 0, []
@@ -513,7 +544,7 @@ class Engine:
             gone_from = max(_p(m.get("last_seen")) or now, self.complete_since)
             if now - gone_from < timedelta(minutes=2):
                 continue
-            self.store.mark_no_reply(m["id"], "удалено из Outlook сотрудником")
+            self.store.mark_no_reply(m["id"], GONE)
             self._log("Письмо «%s» (%s) больше не видно в Outlook — снято с очереди" % (m.get("subject"), m.get("sender")))
 
     def _thread_key(self, subject):
@@ -798,6 +829,7 @@ class Engine:
         while not self.stop:
             try:
                 now = time.time()
+                self.heartbeat = now
                 if now - last_tick > 90:      # ноутбук спал (закрыли крышку): связь с Outlook устанавливаем заново
                     self._log("Компьютер проснулся после сна (%d мин) — переподключение к Outlook" % ((now - last_tick) // 60))
                     try:
@@ -833,6 +865,7 @@ class Engine:
                             self.source.inbox = None
                         except Exception:
                             pass
+                self.heartbeat = time.time()
                 self.check_threats()
                 if now >= next_minute:
                     next_minute = now + 60
@@ -843,6 +876,36 @@ class Engine:
                 self._log(traceback.format_exc()[-500:])
             last_tick = time.time()       # сон компьютера меряем по паузе между кругами: долгий опрос — не «сон»
             time.sleep(2)
+
+    # ---------- сторож зависшего опроса ----------
+    STALL_WARN, STALL_RESTART = 180, 300          # секунд без признаков жизни: сигнал / перезапуск программы
+
+    def stalled_for(self, now=None):
+        """Сколько секунд цикл опроса не подаёт признаков жизни (Outlook завис, ждёт ответа в окне-вопросе): вызов
+        Outlook не возвращается, а вместе с опросом стоят проверка угроз и напоминания. 0 — всё в порядке.
+        Долгое, но идущее чтение большой папки зависанием не считается (источник отмечает каждое прочитанное письмо)."""
+        if self.cfg.get("mode") != "outlook" or not self.loop_running or self.stop:
+            return 0
+        now = now or time.time()
+        last = max(self.heartbeat, getattr(self.source, "progress", 0) or 0)
+        return max(0, now - last)
+
+    def watch_stall(self, now=None):
+        """Вызывается сторожем раз в 15 с. Возвращает True, когда программу пора перезапустить."""
+        now = now or time.time()
+        lag = self.stalled_for(now)
+        if lag < self.STALL_WARN:
+            return False
+        if now - self.stall_warned >= 120:
+            self.stall_warned = now
+            self._log("ВНИМАНИЕ: почта не проверяется %d мин — Outlook не отвечает (проверьте, не открыт ли в Outlook "
+                      "вопрос или окно с ошибкой)" % (lag // 60))
+            notify.toast("Почта ресепшн: почта НЕ проверяется", "Outlook не отвечает. Проверьте, нет ли в Outlook окна с вопросом.")
+            notify.overdue()
+        if lag >= self.STALL_RESTART:
+            self._log("Опрос почты завис на %d мин — программа перезапускается" % (lag // 60))
+            return True
+        return False
 
     # ---------- состояние для экрана ----------
     def _pub(self, m, conv=None, brief=False):

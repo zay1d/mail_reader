@@ -19,14 +19,31 @@ def is_ignored(sender_addr: str, sender_name: str, subject: str, cfg) -> str:
     for own in list(cfg.get("own_addresses") or []) + [cfg.get("mailbox_address") or ""]:
         if own and own.strip().lower() == a:
             return "своё письмо"
+    # Отправитель: запись без «@» и точки («noreply», «bounce») ищется в части адреса ДО «@» и в имени —
+    # домен не считается (info@bounce-park.uz — настоящий клиент); запись с «@» или точкой («@tcmall.uz»,
+    # «shop.uz») — часть всего адреса.
+    local = a.split("@", 1)[0]
+    if "@" in n:                         # имени нет — Outlook показывает вместо него адрес: домен и тут не считается
+        n = n.split("@", 1)[0]
     for pat in cfg.get("ignore_senders") or []:
         p = (pat or "").lower().strip()
-        if p and (p in a or p in n):
+        if not p:
+            continue
+        if (p in a) if ("@" in p or "." in p) else (p in local or p in n):
             return "автоотправитель: " + p
-    subj = (subject or "").lower()
+    # Тема: автописьмо узнаётся по НАЧАЛУ темы («Автоматический ответ: …», «Нет на месте: …») — жалоба
+    # «администратора нет на месте уже час» автописьмом не считается. Запись со «*» в начале — в любом месте темы.
+    subj = re.sub(r"\s+", " ", (subject or "").strip().lower())
+    heads = (subj, norm_subject(subject))
     for pat in cfg.get("ignore_subjects") or []:
-        p = (pat or "").lower().strip()
-        if p and p in subj:
+        p = re.sub(r"\s+", " ", (pat or "").lower().strip())
+        if not p:
+            continue
+        if p.startswith("*"):
+            hit = bool(p[1:].strip()) and p[1:].strip() in subj
+        else:
+            hit = any(h.startswith(p) for h in heads)
+        if hit:
             return "автописьмо: " + pat
     return ""
 
@@ -44,6 +61,12 @@ def reaches(c, rcpts, own):
     s = (c.get("sender") or "").lower()
     own_dom = {a.split("@", 1)[1] for a in (own or ()) if "@" in a}
     return any(r != s and "@" in r and r not in own and r.split("@", 1)[1] not in own_dom for r in rcpts)
+
+def external(rcpts, own):
+    """Есть ли среди получателей хотя бы один внешний адрес (не наш ящик и не наш домен)."""
+    own = {a.lower() for a in (own or ())}
+    own_dom = {a.split("@", 1)[1] for a in own if "@" in a}
+    return any("@" in r and r not in own and r.split("@", 1)[1] not in own_dom for r in (x.lower() for x in rcpts if x))
 
 def match_reply_all(outgoing: dict, candidates: list, own=()):
     """Все письма, на которые отвечает исходящее: найденное + более ранние письма того же отправителя
@@ -96,9 +119,10 @@ def match_reply(outgoing: dict, candidates: list, own=()):
     if conv:
         same = [c for c in candidates if c.get("conv_id") == conv and ok_time(c)]
         pool = [c for c in same if rcpt_ok(c)] or [c for c in same if not c.get("sender") and not c.get("reply_self")]
-        if not pool and not is_forward:
-            # ответ в той же переписке Outlook, но на другой адрес — тоже ответ (кроме заявок с сайта:
-            # там ответ засчитывается только клиенту); пересылка (FW:) в отдел ответом не считается
+        if not pool and not is_forward and (external(rcpts, own) or not own):
+            # ответ в той же переписке Outlook, но на другой ВНЕШНИЙ адрес — тоже ответ (клиент просил писать на
+            # другой адрес); кроме заявок с сайта: там ответ засчитывается только клиенту. Пересылка (FW:) и
+            # «Ответить» с заменой адресата на коллегу своего домена ответом клиенту не считаются.
             pool = [c for c in same if not c.get("reply_self")]
         if pool:
             # несколько писем в одной переписке (заявки формы с одинаковой темой) — сначала с той же темой

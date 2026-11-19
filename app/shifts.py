@@ -58,6 +58,8 @@ def shifts_of_day(day, cfg):
     for i, s in enumerate(lst):
         start = base + timedelta(minutes=_hm(s["start"]))
         end = base + timedelta(minutes=_hm(s["end"]))
+        if end <= start:                 # смена через полночь (20:00–08:00) или конец записан как 00:00
+            end += timedelta(days=1)
         win_start = base if i == 0 else start
         win_end = base + timedelta(days=1) if i == len(lst) - 1 else base + timedelta(minutes=_hm(lst[i + 1]["start"]))
         out.append({
@@ -77,19 +79,20 @@ def shift_key_for(dt, cfg):
 def sla_start(dt, cfg):
     """С какого момента считать срок ответа: письмо в рабочие часы — с получения;
     ночное (вне смен) — с начала ближайшей смены."""
-    for d in (dt, dt + timedelta(days=1)):
+    starts = []                          # смены вчера (ночная до утра), сегодня и завтра; порядок в настройках любой
+    for d in (dt - timedelta(days=1), dt, dt + timedelta(days=1)):
         for s in shifts_of_day(d, cfg):
             if s["start"] <= dt < s["end"]:
                 return dt
             if s["start"] > dt:
-                return s["start"]
-    return dt
+                starts.append(s["start"])
+    return min(starts) if starts else dt
 
 def is_night(dt, cfg):
     return sla_start(dt, cfg) != dt
 
 def active_shifts(now, cfg):
-    return [s for s in shifts_of_day(now, cfg) if s["start"] <= now < s["end"]]
+    return [s for d in (now - timedelta(days=1), now) for s in shifts_of_day(d, cfg) if s["start"] <= now < s["end"]]
 
 def shift_name_at(dt, cfg):
     """Название смены — только подпись: смена расписания, чьё начало ближе всего к моменту открытия."""
