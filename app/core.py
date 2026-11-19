@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import config, notify, threats, matcher, shifts, classify, telegram, autostart
 from store import Store, open_checked
 
-VERSION = "1.35"
+VERSION = "1.36"
 DEMO_FORWARD = "marketing-demo@example.uz"    # адрес пересылки демо-кнопки; в режиме Outlook на него ничего не уходит
 # метки нашего письма-сигнала в СБ; письмо с [0] в теме вернулось в ящик ресепшн (автоответ, группа, пересылка) — без тревоги
 SB_MARKS = ("УГРОЗА: письмо на почту ресепшн", "Сработал сигнал угрозы в почте ресепшн")

@@ -276,7 +276,8 @@ class CountFromAndState(EngineCase):
         self.assertEqual(s["counts"]["queue"], 2)
         self.assertEqual(s["counts"]["urgent"], 2)
         self.assertEqual(len(s["threats"]), 1)
-        self.assertEqual(s["version"], "1.35")
+        import core
+        self.assertEqual(s["version"], core.VERSION)
 
 
 class Shifts(EngineCase):
