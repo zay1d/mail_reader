@@ -34,6 +34,7 @@ class _Items:
 
 class _Folder:
     FolderPath = "\\\\contact\\Входящие"
+    Name = "Входящие"
     def __init__(self, items):
         self.Items = items
 
@@ -389,6 +390,53 @@ class Decisions1911(unittest.TestCase):
         self.eng.no_reply(m["id"], "не требует ответа")
         self.eng.poll()
         self.assertEqual(self.queue_ids(), [])
+
+
+
+class _BadDateItem:
+    Class = 43
+    @property
+    def ReceivedTime(self):
+        raise ImportError("No module named 'win32timezone'")
+
+
+class UnreadableLetters(unittest.TestCase):
+    """19.11, версия 1.38 на ПК ресепшн: в сборке не было win32timezone — дата ни одного письма не читалась.
+    Статус оставался зелёным, письма молча пропускались. Теперь — красный статус и текст ошибки."""
+    def test_folder_where_no_letter_can_be_read_is_an_error(self):
+        src = OutlookSource({})
+        items = _Items([_BadDateItem() for _ in range(10)])
+        list(src._iter(_Folder(items), "ReceivedTime", datetime.now() - timedelta(days=1)))
+        st = src.scan[_Folder.FolderPath]
+        self.assertEqual((st["seen"], st["errors"]), (10, 10))
+        self.assertIn("win32timezone", st["item_error"])
+
+    def test_status_is_red_and_journal_names_the_error(self):
+        eng, fsrc, tmp = make_engine()
+        try:
+            src = OutlookSource({})
+            src.inbox, src.sent, src.junk = _Folder(_Items([_BadDateItem() for _ in range(10)])), None, None
+            src._subfolders = lambda f, depth=3: [f]
+            inc, out = src.fetch(datetime.now() - timedelta(days=1))
+            self.assertEqual(inc, [])
+            st, text = src.status()
+            self.assertEqual(st, "error")
+            self.assertIn("НЕ читаются", text)
+            self.assertIn("win32timezone", text)
+            eng._log_read_problems(src)
+            self.assertIn("сбоев чтения Outlook: 10", "\n".join(eng.log))
+        finally:
+            cleanup(eng, tmp)
+
+    def test_single_bad_letter_is_not_a_breakdown(self):
+        src = OutlookSource({})
+        now = datetime.now()
+        good = [_Item(now - timedelta(minutes=i)) for i in range(9)]
+        src.inbox, src.sent, src.junk = _Folder(_Items(good + [_BadDateItem()])), None, None
+        src._subfolders = lambda f, depth=3: [f]
+        src.fetch(now - timedelta(days=1))
+        self.assertEqual(src.read_broken, "")
+        self.assertEqual(src.status()[0], "ok")
 
 
 if __name__ == "__main__":

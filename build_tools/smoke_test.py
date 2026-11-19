@@ -52,6 +52,14 @@ env = dict(os.environ, ANTHROPIC_BASE_URL="http://127.0.0.1:%d" % fake.server_ad
            no_proxy="127.0.0.1,localhost")
 
 exe = os.path.join(work, "ReceptionMail.exe")
+if os.path.exists(exe):
+    # самопроверка exe: даты из COM читаются (без модуля win32timezone каждое письмо Outlook было «ошибкой чтения»)
+    st_file = os.path.join(work, "selftest.txt")
+    subprocess.run([exe, "--selftest", st_file], cwd=work, timeout=60)
+    with open(st_file, encoding="utf-8") as f:
+        st_text = f.read()
+    print(st_text)
+    assert st_text.startswith("OK"), "самопроверка exe не прошла:\n" + st_text
 cmd = [exe] if os.path.exists(exe) else [sys.executable, os.path.join(work, "app", "main.py")]   # без exe — из исходников
 proc = subprocess.Popen(cmd + ["--no-browser"], cwd=work, env=env)
 try:

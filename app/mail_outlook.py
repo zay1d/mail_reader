@@ -61,6 +61,8 @@ class OutlookSource:
         self.scan = {}             # как читались папки (для диагностики): путь -> сведения
         self.full_scan = set()     # папки, где Outlook не соблюдает порядок «новые сверху» — читать целиком
         self.progress = 0          # когда в последний раз прочитан очередной элемент папки
+        self.read_broken = ""      # почти все письма папки не читаются (не мелкий сбой, а поломка)
+        self.read_problems = 0
         self.last_complete = False # последний опрос прочитал все папки и письма без единой ошибки
 
     # ---------- поиск ящика ----------
@@ -121,6 +123,7 @@ class OutlookSource:
 
     def connect(self):
         import pythoncom, win32com.client
+        import win32timezone  # noqa: F401 — без него pywin32 не читает даты писем (ReceivedTime): каждое письмо — ошибка
         pythoncom.CoInitialize()
         step = "запуск Outlook"
         try:
@@ -196,6 +199,8 @@ class OutlookSource:
             return "error", self.error
         if self.inbox is None:
             return "off", "Outlook не подключён"
+        if self.read_broken:
+            return "error", "Почта не обрабатывается: " + self.read_broken
         try:
             self.inbox.Name
             bad = getattr(self, "read_problems", 0)
@@ -250,7 +255,8 @@ class OutlookSource:
                                 st["newest"].strftime("%d.%m.%Y %H:%M") if st["newest"] else "—",
                                 ", ".join(st["first"]) or "—",
                                 "вся папка (Outlook не соблюдает порядок)" if st["full"] else ("по дате" if st["sorted"] else "без сортировки"),
-                                st["errors"], cls or "—", ("; " + st["error"]) if st["error"] else ""))
+                                st["errors"], cls or "—", ("; " + st["error"]) if st["error"] else "")
+                             + (("; первая ошибка письма: " + st["item_error"]) if st.get("item_error") else ""))
         return "\n".join(lines)
 
     # ---------- чтение ----------
@@ -414,8 +420,10 @@ class OutlookSource:
                         old_run = 0
                         st["found"] += 1
                         yield it, d
-            except Exception:
+            except Exception as e:
                 st["errors"] += 1
+                if not st.get("item_error"):
+                    st["item_error"] = _err(e)
             try:
                 it = items.GetNext()
             except Exception as e:
@@ -556,6 +564,12 @@ class OutlookSource:
             problems += sum(st.get("errors", 0) for st in self.scan.values())
             self.last_complete = problems == 0
             self.read_problems = problems
+            self.read_broken = ""
+            for st in self.scan.values():
+                if st.get("seen", 0) >= 3 and st.get("errors", 0) >= max(3, st["seen"] * 0.5):
+                    self.read_broken = ("письма в Outlook НЕ читаются: ошибок %d из %d (%s)"
+                                        % (st["errors"], st["seen"], st.get("item_error") or st.get("error") or "?"))
+                    break
             for k in [k for k in self._cache_in if k not in seen_in]:
                 del self._cache_in[k]
             for k in [k for k in self._cache_out if k not in seen_out]:

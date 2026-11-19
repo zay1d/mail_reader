@@ -80,7 +80,40 @@ def _watch(engine):
         except Exception:
             pass
 
+def _selftest(path):
+    """ReceptionMail.exe --selftest файл: проверка, что в сборке есть всё для работы с Outlook — дата, записанная
+    в COM-объект, читается обратно (так же Outlook отдаёт ReceivedTime). Результат — в файл (у exe нет консоли)."""
+    lines, ok = [], True
+    try:
+        import datetime as _d
+        import pythoncom, win32com.client
+        import win32timezone  # noqa: F401
+        pythoncom.CoInitialize()
+        box = win32com.client.Dispatch("Scripting.Dictionary")
+        box.Add("t", _d.datetime(2026, 11, 19, 17, 52, 0))
+        v = box.Item("t")
+        lines.append("COM-дата: %r" % (v,))
+        if not (v.year == 2026 and v.month == 11 and v.day == 19):
+            ok = False
+            lines.append("ОШИБКА: дата прочитана неверно")
+    except Exception:
+        ok = False
+        lines.append("ОШИБКА: " + traceback.format_exc()[-600:])
+    for mod in ("anthropic", "sqlite3", "winsound"):
+        try:
+            __import__(mod)
+            lines.append("модуль %s: есть" % mod)
+        except Exception as e:
+            ok = False
+            lines.append("модуль %s: НЕТ (%s)" % (mod, e))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(("OK" if ok else "FAIL") + "\n" + "\n".join(lines) + "\n")
+
 def main():
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        _selftest(sys.argv[i + 1] if len(sys.argv) > i + 1 else os.path.join(config.BASE, "selftest.txt"))
+        return
     base = config.BASE
     cfg = config.load()
     try:

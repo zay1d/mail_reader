@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import config, notify, threats, matcher, shifts, classify, telegram, autostart, ai
 from store import Store, open_checked
 
-VERSION = "1.38"
+VERSION = "1.39"
 DEMO_FORWARD = "marketing-demo@example.uz"    # адрес пересылки демо-кнопки; в режиме Outlook на него ничего не уходит
 # метки нашего письма-сигнала в СБ; письмо с [0] в теме вернулось в ящик ресепшн (автоответ, группа, пересылка) — без тревоги
 SB_MARKS = ("УГРОЗА: письмо на почту ресепшн", "Сработал сигнал угрозы в почте ресепшн")
@@ -483,6 +483,25 @@ class Engine:
         self.first_poll = False
         self.last_poll = datetime.now()
         self.status = src.status()
+        self._log_read_problems(src)
+
+    def _log_read_problems(self, src):
+        """Сбои чтения Outlook — в журнал с текстом первой ошибки (раз в 10 минут, пока не пройдут)."""
+        bad = getattr(src, "read_problems", 0) or 0
+        if not bad:
+            self.read_logged = 0
+            return
+        if time.time() - getattr(self, "read_logged", 0) < 600:
+            return
+        self.read_logged = time.time()
+        first = ""
+        for path, st in (getattr(src, "scan", {}) or {}).items():
+            if st.get("item_error") or st.get("error"):
+                first = "%s: %s" % (path, st.get("item_error") or st.get("error"))
+                break
+        self._log("ВНИМАНИЕ: сбоев чтения Outlook: %d%s%s" % (
+            bad, (" — " + src.read_broken) if getattr(src, "read_broken", "") else "",
+            ("; первая ошибка — " + first) if first else ""))
 
     def _own_echo(self, m, ign):
         """Письмо — возврат нашего же сигнала в СБ или нашего отчёта смены (в них цитируются слова угрозы).
