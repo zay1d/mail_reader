@@ -31,8 +31,12 @@ class FakeClaude(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         key = self.headers.get("x-api-key") or (self.headers.get("Authorization") or "").replace("Bearer ", "")
         AI_CALLS.append({"path": self.path, "key": key, "model": body.get("model")})
-        answer = {"category": "general", "confidence": "high", "category_reason": "пробный ответ", "reason": "пробный ответ",
-                  "threat": "none", "threat_reason": "", "keywords": []}
+        # ИИ — заключительный фильтр по угрозам: поддельный ИИ узнаёт угрозы демо-писем, иначе снял бы их тревогу
+        text = json.dumps(body.get("messages") or [], ensure_ascii=False).lower()
+        danger = any(w in text for w in ("бомб", "б о м б а", "bomba", "gunman", "взорв"))
+        answer = {"category": "security" if danger else "general", "confidence": "high", "category_reason": "пробный ответ",
+                  "reason": "пробный ответ", "threat": "explicit" if danger else "none",
+                  "threat_reason": "пробный ответ", "keywords": []}
         out = json.dumps({"id": "msg_smoke", "type": "message", "role": "assistant", "model": body.get("model"),
                           "content": [{"type": "text", "text": json.dumps(answer, ensure_ascii=False)}],
                           "stop_reason": "end_turn", "stop_sequence": None,
