@@ -80,9 +80,9 @@ class Detector:
         self.polite = _phrases(cfg.get("threat_polite_words"))
 
     def _word_at(self, v, s, e):
-        ws = v.rfind(" ", 0, s) + 1
-        we = v.find(" ", e)
-        we = len(v) if we == -1 else we
+        ws = max(v.rfind(c, 0, s) for c in " \n\r\t") + 1         # слово целиком: граница — пробел или перевод строки
+        ends = [i for i in (v.find(c, e) for c in " \n\r\t") if i != -1]
+        we = min(ends) if ends else len(v)
         return v[ws:we].strip(".,;:!?()\"'«»\n\r\t")
 
     def _excepted(self, v, s, e):

@@ -113,9 +113,11 @@ def set_forward(cfg_categories, key, addr):
 
 class FakeAI:
     """Поддельный второй фильтр: ответы задаются в тесте по теме письма, обращений к Claude нет."""
-    def __init__(self, answers=None, recheck=None):
+    def __init__(self, answers=None, recheck=None, threat_recheck=None):
         self.answers = answers or {}        # тема письма -> ответ analyze() или исключение
         self.rechecks = recheck or {}       # тема письма -> ответ recheck() или исключение
+        self.threat_rechecks = threat_recheck or {}   # тема письма -> ответ recheck_threat() или исключение
+        self.threat_rechecked = []
         self.sent = []
         self.on = True
 
@@ -147,6 +149,13 @@ class FakeAI:
              "threat_reason": "", "keywords": []}
         d.update(a)
         return d
+
+    def recheck_threat(self, text, words, level, ai_reason):
+        self.threat_rechecked.append({"subject": self._subject, "words": list(words), "level": level})
+        a = self._answer(self.threat_rechecks)
+        if a is None:
+            raise AssertionError("нет ответа перепроверки угрозы для письма «%s»" % self._subject)
+        return dict({"reason": "после перепроверки"}, **a)
 
     def recheck(self, text, rule_cat, rule_words, ai_cat, ai_reason):
         a = self._answer(self.rechecks) or {"category": ai_cat, "confidence": "high"}

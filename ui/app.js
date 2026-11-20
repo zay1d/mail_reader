@@ -64,7 +64,7 @@
     var items = state.queue.filter(function (m) { return !catFilter || (m.category || 'general') === catFilter; });
     $('empty').hidden = items.length > 0;
     $('empty-t').textContent = catFilter && c.queue ? 'В этом направлении всё отвечено' : '✓ Все письма отвечены';
-    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : '') + '|' + (m.category || '') + '|' + (m.ai_state || '') + (m.cat_conflict || '') + '|' + (m.ai_note || '').length + '|' + (m.threat_words || []).length; }).join(';');
+    var sig = items.map(function (m) { return m.id + '|' + (m.carried ? 1 : 0) + '|' + (m.auto_replied_at ? 1 : 0) + '|' + m.priority + '|' + m.thread_count + '|' + (m.threat_level || 0) + (m.threat_ack_at ? 'a' : '') + (m.junk ? 'j' : '') + '|' + (m.self_reply_at || '') + '|' + (m.client_email || '') + (m.reply_self ? 's' : '') + '|' + (m.category || '') + '|' + (m.ai_state || '') + (m.cat_conflict || '') + '|' + (m.ai_note || '').length + '|' + (m.ai_threat_note || '').length + '|' + (m.threat_words || []).length; }).join(';');
     if (q.dataset.sig !== sig) {
       q.dataset.sig = sig; q.innerHTML = '';
       items.forEach(function (m) {
@@ -151,7 +151,10 @@
         '<button class="btn-cat" data-setcat="' + esc(m.category) + '">' + esc(m.category_name) + '</button> ' +
         '<button class="btn-cat" data-setcat="' + esc(m.cat_conflict) + '">' + esc(m.cat_conflict_name || m.cat_conflict) + '</button></div>';
     }
-    return m.ai_note ? '<div class="note ai">' + esc(m.ai_note) + '</div>' : '';
+    var h = '';
+    if (m.ai_threat_note && !(m.threat_words && m.threat_words.length)) h += '<div class="note ai">' + esc(m.ai_threat_note) + '</div>';
+    if (m.ai_note) h += '<div class="note ai">' + esc(m.ai_note) + '</div>';
+    return h;
   }
 
   // письмо в панели под пилюлями: что с ним стало

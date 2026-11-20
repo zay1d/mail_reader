@@ -126,6 +126,8 @@ DEFAULTS = {
     "ai_effort": "low",                   # глубина разбора: low | medium | high
     "ai_hide_personal": True,             # перед отправкой в ИИ заменять личные данные метками
     "ai_wait_seconds": 180,               # сколько ждать ответа ИИ, прежде чем обработать письмо по словарю
+    "ai_final_threat": True,              # ИИ — заключительный фильтр по угрозам: после перепроверки может снять тревогу словаря
+    "ai_threat_wait_seconds": 30,         # сколько секунд тревога словаря ждёт решения ИИ (потом — тревога по словарю)
     "forward_note": "Переслано с почты ресепшн Tashkent City Mall. Направление: {category}. Просьба ответить отправителю напрямую.",
 }
 
@@ -203,7 +205,7 @@ def _write(cfg):
 
 _INT_KEYS = {"port": (1, 65535), "poll_seconds": (5, 3600), "lookback_days": (1, 60), "repeat_alert_minutes": (1, 1440),
              "sla_warn_minutes": (1, 100000), "sla_overdue_minutes": (1, 100000), "auto_reply_backlog_hours": (1, 720),
-             "ai_wait_seconds": (30, 3600)}
+             "ai_wait_seconds": (30, 3600), "ai_threat_wait_seconds": (5, 120)}
 
 def _sanitize(cfg):
     """Значения не того вида (ручная правка config.json: «20 сек», пусто, строка вместо списка) заменяются

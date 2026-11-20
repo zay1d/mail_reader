@@ -191,18 +191,23 @@ class Failures(AICase):
 
 class ThreatInsurance(AICase):
     """ИИ может только поднять тревогу."""
-    def test_dictionary_calm_ai_sees_threat_yellow_screen(self):
+    def test_dictionary_calm_ai_sees_explicit_threat_red_screen(self):
         m = self.src.add("anon@example.com", "", "На третьем этаже оставлен рюкзак с сюрпризом. Скоро узнаете.")
         self.ai.answers[""] = {"category": "security", "threat": "explicit", "threat_reason": "сообщает об оставленном опасном предмете"}
         self.eng.poll()
         self.assertEqual(self.rec(m)["threat_level"], 0)
         ai_wait(self.eng); self.eng.check_threats()
         r = self.rec(m)
-        self.assertEqual(r["threat_level"], 1)                                         # жёлтый: письмо читает сотрудник
+        self.assertEqual((r["threat_level"], r["category"], r["priority"]), (2, "security", 1))
         self.assertEqual(r["threat_words"], ["ИИ: сообщает об оставленном опасном предмете"])
-        self.assertEqual(r["priority"], 1)
-        self.assertEqual([t["id"] for t in self.eng.store.threats_pending()], [m["id"]])
-        self.assertEqual(self.src.replies, [])                                         # автоответ не уходит
+        self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])          # сигнал в СБ
+        self.assertEqual(self.src.replies, [])
+
+    def test_dictionary_calm_ai_sees_possible_threat_yellow_screen(self):
+        m = self.src.add("anon@example.com", "Ждите", "Вы у меня ещё попляшете, я знаю, где вы работаете.")
+        self.ai.answers["Ждите"] = {"category": "security", "threat": "possible", "threat_reason": "запугивание"}
+        self.eng.poll(); ai_wait(self.eng); self.eng.check_threats()
+        self.assertEqual(self.rec(m)["threat_level"], 1)
         self.assertEqual(self.src.mails, [])                                           # в СБ — после решения сотрудника
         self.eng.threat_escalate(m["id"]); self.eng.check_threats()
         self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])
@@ -231,21 +236,126 @@ class ThreatInsurance(AICase):
         self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])          # сигнал в СБ
         self.assertEqual(self.src.replies, [])
 
-    def test_dictionary_yellow_ai_calm_stays_yellow_with_note(self):
-        m = self.src.add("client@mail.ru", "Отзыв", "Вы ещё пожалеете, что не открыли у себя наш магазин!")
-        self.ai.answers["Отзыв"] = {"category": "rent", "threat": "none", "threat_reason": "деловое предложение, не запугивание"}
-        self.eng.poll(); ai_wait(self.eng)
+    def test_dictionary_yellow_ai_calm_after_recheck_no_alarm(self):
+        m = self.src.add("client@mail.ru", "Отзыв", "Вы ещё пожалеете, что не открыли у себя наш магазин! Хотим арендовать помещение.")
+        self.ai.answers["Отзыв"] = {"category": "rent", "threat": "none", "threat_reason": "деловое предложение"}
+        self.ai.threat_rechecks["Отзыв"] = {"threat": "none", "reason": "это реклама аренды, не запугивание"}
+        self.eng.poll()
+        self.eng.check_threats()
+        self.assertEqual(self.eng.state()["threats"], [])                              # жёлтый экран ждёт ИИ
+        ai_wait(self.eng); self.eng.check_threats()
         r = self.rec(m)
-        self.assertEqual(r["threat_level"], 1)                                         # ИИ тревогу не снимает
-        self.assertEqual(len(self.eng.store.threats_pending()), 1)
-        self.assertIn("ИИ считает, что угрозы нет", r["ai_threat_note"])
-        self.assertEqual(self.src.replies, [])
+        self.assertEqual((r["threat_level"], r["threat_words"]), (0, []))
+        self.assertIn("Словарь нашёл «пожалеете»", r["ai_threat_note"])
+        self.assertIn("угрозы нет", r["ai_threat_note"])
+        self.assertEqual(self.eng.store.threats_pending(), [])
+        self.assertEqual(r["forwarded_to"], "rent@dept.uz")                            # обычное письмо: в отдел
+        self.assertEqual(len(self.src.replies), 1)                                     # и автоответ
 
-    def test_dictionary_red_is_not_sent_to_ai(self):
-        m = self.src.add("anon@example.com", "", "В вашем торговом центре заложена бомба.")
-        self.eng.poll(); self.eng.poll()
+    def test_film_shooting_red_by_dictionary_is_lowered_by_ai(self):
+        # словарь: «shooting» — красный; ИИ: съёмка фильма (маркетинг), после перепроверки уверен — тревоги нет
+        m = self.src.add("producer@film.uz", "Shooting", "Hello! We plan a film shooting in your atrium next week, 2 hours. Who approves?")
+        self.assertEqual(threats_level(self.eng, m), 2)
+        self.ai.answers["Shooting"] = {"category": "marketing", "threat": "none", "threat_reason": "съёмка фильма",
+                                       "category_reason": "разрешение на съёмку"}
+        self.ai.threat_rechecks["Shooting"] = {"threat": "none", "reason": "речь о киносъёмке в атриуме, не о стрельбе"}
+        self.eng.poll()
+        self.eng.check_threats()
+        self.assertEqual(self.src.mails, [])                                           # сирена и СБ ждут ИИ
+        self.assertEqual(self.eng.state()["threats"], [])
+        ai_wait(self.eng); self.eng.check_threats()
+        r = self.rec(m)
+        self.assertEqual((r["threat_level"], r["category"]), (0, "marketing"))
+        self.assertEqual(self.src.mails, [])                                           # сигнал в СБ не ушёл
+        self.assertEqual(self.eng.store.threats_pending(), [])
+        self.assertEqual(r["forwarded_to"], "marketing@dept.uz")
+        self.assertEqual(len(self.src.replies), 1)
+        self.assertEqual(r["priority"], 2)
+        self.assertEqual(self.ai.threat_rechecked[0]["level"], 2)
+        self.assertIn("ИИ после перепроверки: угрозы нет", r["ai_threat_note"])
+        pub = [x for x in self.eng.state()["queue"] + self.eng.state()["forwarded"] if x["id"] == m["id"]][0]
+        self.assertIn("угрозы нет", pub["ai_threat_note"])
+
+    def test_red_confirmed_by_ai_raises_alarm_after_answer(self):
+        m = self.src.add("anon@example.com", "Внимание", "В вашем торговом центре заложена бомба.")
+        self.ai.answers["Внимание"] = {"category": "security", "threat": "explicit", "threat_reason": "сообщение о бомбе"}
+        self.eng.poll()
+        ai_wait(self.eng); self.eng.check_threats()
+        r = self.rec(m)
+        self.assertEqual(r["threat_level"], 2)
+        self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])
+        self.assertEqual(self.ai.threat_rechecked, [])                                 # согласны — без перепроверки
+
+    def test_red_ai_doubts_after_recheck_becomes_yellow(self):
+        m = self.src.add("anon@example.com", "Квест", "Квест «Бомба в подвале»: найдите бомбу за час. Записаться можно?")
+        self.ai.answers["Квест"] = {"category": "general", "threat": "none"}
+        self.ai.threat_rechecks["Квест"] = {"threat": "possible", "reason": "похоже на квест, но лучше проверить"}
+        self.eng.poll(); ai_wait(self.eng); self.eng.check_threats()
+        r = self.rec(m)
+        self.assertEqual(r["threat_level"], 1)
+        self.assertEqual(self.src.mails, [])
+        self.assertEqual(len(self.eng.store.threats_pending()), 1)
+        self.assertIn("Словарь: явная угроза", r["ai_threat_note"])
+
+    def test_red_ai_recheck_says_threat_keeps_red(self):
+        m = self.src.add("anon@example.com", "Шутка", "Это просто шутка, не поднимайте тревогу: в здании бомба.")
+        self.ai.answers["Шутка"] = {"category": "general", "threat": "none"}
+        self.ai.threat_rechecks["Шутка"] = {"threat": "explicit", "reason": "угроза, замаскированная под шутку"}
+        self.eng.poll(); ai_wait(self.eng); self.eng.check_threats()
         self.assertEqual(self.rec(m)["threat_level"], 2)
+        self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])
+
+    def test_recheck_error_keeps_dictionary_alarm(self):
+        m = self.src.add("anon@example.com", "Шутка", "В здании бомба.")
+        self.ai.answers["Шутка"] = {"category": "general", "threat": "none"}
+        self.ai.threat_rechecks["Шутка"] = ai.AIError("network", "нет связи")
+        self.eng.poll(); ai_wait(self.eng); self.eng.check_threats()
+        self.assertEqual(self.rec(m)["threat_level"], 2)
+        self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])
+
+    def test_ai_error_releases_dictionary_alarm_at_once(self):
+        m = self.src.add("anon@example.com", "Внимание", "В здании бомба.")
+        self.ai.answers["Внимание"] = ai.AIError("server", "сбой Claude API (529)")
+        self.eng.poll(); ai_wait(self.eng); self.eng.check_threats()
+        self.assertEqual(self.rec(m)["threat_level"], 2)
+        self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])
+
+    def test_slow_ai_alarm_is_raised_after_wait_and_not_lowered_later(self):
+        gate = threading.Event()
+        orig = self.ai.analyze
+        self.ai.analyze = lambda text: (gate.wait(10), orig(text))[1]
+        m = self.src.add("producer@film.uz", "Shooting", "We plan a film shooting in your atrium.")
+        self.ai.answers["Shooting"] = {"category": "marketing", "threat": "none"}
+        self.ai.threat_rechecks["Shooting"] = {"threat": "none", "reason": "киносъёмка"}
+        self.eng.poll()
+        self.eng.check_threats()
+        self.assertEqual(self.src.mails, [])
+        self.eng.threat_hold[m["id"]] = time.time() - 1                                # прошло 30 секунд
+        self.eng.check_threats()
+        self.assertEqual([x["to"] for x in self.src.mails], ["sb@tcmall.uz"])          # тревога по словарю
+        gate.set(); ai_wait(self.eng); self.eng.check_threats()
+        r = self.rec(m)
+        self.assertEqual(r["threat_level"], 2)                                         # показанную тревогу ИИ не снимает
+        self.assertIn("ИИ считает, что угрозы нет", r["ai_threat_note"])
+
+    def test_colleague_threat_is_not_held(self):
+        m = self.src.add("k.sabitova@tcmall.uz", "Внимание", "В здании бомба.")
+        self.eng.poll(); self.eng.check_threats()
+        self.assertEqual(self.rec(m)["threat_level"], 2)
+        self.assertEqual(len(self.eng.state()["threats"]), 1)                          # без ожидания ИИ
         self.assertEqual(self.ai.sent, [])
+
+    def test_final_filter_switched_off_old_behaviour(self):
+        self.eng.apply_settings({"ai_final_threat": False})
+        m = self.src.add("anon@example.com", "", "В вашем торговом центре заложена бомба.")
+        self.eng.poll(); self.eng.check_threats()
+        self.assertEqual(len(self.eng.state()["threats"]), 1)                          # сразу, без ожидания
+        self.assertEqual(self.ai.sent, [])                                             # красное в ИИ не уходит
+        m2 = self.src.add("client@mail.ru", "Отзыв", "Вы ещё пожалеете, что не открыли у себя наш магазин!")
+        self.ai.answers["Отзыв"] = {"category": "rent", "threat": "none", "threat_reason": "деловое предложение"}
+        self.eng.poll(); ai_wait(self.eng)
+        self.assertEqual(self.rec(m2)["threat_level"], 1)                              # ИИ тревогу не снимает
+        self.assertIn("ИИ считает, что угрозы нет", self.rec(m2)["ai_threat_note"])
 
     def test_model_refusal_shows_letter_to_staff(self):
         m = self.src.add("anon@example.com", "Письмо", "Странный текст.")
@@ -255,6 +365,10 @@ class ThreatInsurance(AICase):
         self.assertEqual(r["threat_level"], 1)
         self.assertIn("ИИ отказался разбирать", r["threat_words"][0])
         self.assertFalse(self.eng._ai_paused())
+
+
+def threats_level(eng, m):
+    return eng.detector.analyze((m.get("subject") or "") + "\n" + (m.get("body") or ""))[0]
 
 
 class WhatIsSent(AICase):

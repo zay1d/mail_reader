@@ -79,7 +79,7 @@
       <div><label class="f">Telegram: получатели тревоги — ID группы и личных чатов через запятую</label><input id="telegram_chat_id" placeholder="-1001234567890, 123456789"></div>
     </div>
     <p class="help">Личный получатель должен один раз написать боту «/start», группа — добавить бота участником. Затем нажмите <button class="btn-ghost" id="btn-tgchats" style="padding:6px 12px;font-size:13px">Показать, кто написал боту</button> и добавьте нужных. <span id="tg-chats"></span></p>
-    <p class="help">Бота нужно добавить в группу СБ. Кроме второго фильтра (ИИ, раздел ниже) это единственный выход программы в интернет: в Telegram уходит только сигнал об угрозе (отправитель, тема, найденные слова, начало текста). <button class="btn-ghost" id="btn-tg" style="padding:6px 12px;font-size:13px">Отправить проверочное сообщение</button> <span id="tg-res"></span></p>
+    <p class="help">Бота нужно добавить в группу СБ. Кроме ИИ (раздел ниже) это единственный выход программы в интернет: в Telegram уходит только сигнал об угрозе (отправитель, тема, найденные слова, начало текста). <button class="btn-ghost" id="btn-tg" style="padding:6px 12px;font-size:13px">Отправить проверочное сообщение</button> <span id="tg-res"></span></p>
     <label class="f">Явная угроза — КРАСНЫЙ экран (регулярные выражения, по одному в строке; \b — начало слова)</label>
     <textarea id="threat_words" style="min-height:160px"></textarea>
     <label class="f">Исключения: если такая фраза стоит рядом с найденным словом, тревоги нет («взрывной рост», «photo shoot»)</label>
@@ -155,9 +155,11 @@
         <option value="claude-haiku-5-5">Claude Haiku 5.5 — самая дешёвая</option>
       </select></div>
     </div>
+    <label class="check"><input type="checkbox" id="ai_final_threat"> ИИ — заключительный фильтр по угрозам: может снять тревогу словаря, если после перепроверки уверен, что угрозы нет («мероприятие было бомба», «фильм шутинг»)</label>
     <label class="check"><input type="checkbox" id="ai_hide_personal"> Скрывать личные данные перед отправкой в ИИ (имя отправителя, телефоны, адреса почты, номера карт, документов и машин заменяются метками)</label>
     <p class="help"><b>Направление.</b> Словарь и ИИ назвали одно направление — письмо сразу уходит в отдел. Разошлись — ИИ перечитывает письмо с обоими мнениями; если он уверен, письмо уходит по его решению, если нет — на карточке появляется вопрос «какое направление?», и письмо в отдел не пересылается, пока сотрудник не выберет. Автоответ клиенту уходит в любом случае.<br>
-    <b>Угрозы.</b> ИИ может только поднять тревогу, снять её он не может. Красный экран по словарю остаётся красным (такое письмо в ИИ не отправляется). Словарь ничего не нашёл, а ИИ видит угрозу — жёлтый экран с объяснением ИИ. Жёлтый по словарю, ИИ считает угрозу явной — красный экран и сигнал в СБ. Жёлтый по словарю, ИИ угрозы не видит — экран остаётся жёлтым, мнение ИИ показано рядом.<br>
+    <b>Угрозы (галочка «заключительный фильтр» включена).</b> Каждое письмо читает ИИ, и решение за ним. Словарь нашёл угрозу — экран тревоги, сирена и сигнал в СБ ждут ответа ИИ до 30 секунд. ИИ согласен — тревога. ИИ не согласен — он перечитывает письмо второй раз, зная, какие слова нашёл словарь: уверен, что угрозы нет, — тревоги нет, на карточке видно, что нашёл словарь и почему ИИ решил иначе; есть сомнение — жёлтый экран (письмо читает сотрудник). Словарь ничего не нашёл, ИИ видит явную угрозу — красный экран; возможную — жёлтый. ИИ не ответил за 30 секунд, недоступен или выключен — решает словарь, как раньше.<br>
+    <b>Галочка выключена:</b> ИИ может только поднять тревогу, снять её не может; красный экран по словарю в ИИ не отправляется.<br>
     <b>Что уходит в ИИ:</b> тема, текст (до 12 000 знаков) и названия вложений новых писем, которые ждут ответа. Не уходят: рассылки и автописьма, письма коллег своего домена, вложения, адрес отправителя.</p>
     <p class="help"><button class="btn-ghost" id="btn-ai-test" style="padding:6px 12px;font-size:13px">Проверить связь с ИИ</button> <span id="ai-res" style="margin-left:8px"></span></p>
     <p class="help"><button class="btn-ghost" id="btn-ai-sent" style="padding:6px 12px;font-size:13px">Показать, что отправлялось в ИИ</button> <span style="margin-left:8px">последние 30 писем с момента запуска программы — в том виде, в каком они ушли</span></p>
@@ -216,7 +218,7 @@
     $('shifts').value=(c.shifts||[]).map(function(s){return s.name+';'+s.start+';'+s.end;}).join('\n');
     $('sound').checked=!!c.sound; $('toast').checked=!!c.toast; $('autostart').checked=c.autostart!==false;
     // второй фильтр — ИИ
-    $('ai_enabled').checked=!!c.ai_enabled; $('ai_api_key').value=c.ai_api_key||''; $('ai_hide_personal').checked=c.ai_hide_personal!==false;
+    $('ai_enabled').checked=!!c.ai_enabled; $('ai_api_key').value=c.ai_api_key||''; $('ai_hide_personal').checked=c.ai_hide_personal!==false; $('ai_final_threat').checked=c.ai_final_threat!==false;
     $('ai_model').value=c.ai_model||'claude-opus-5-5'; if(!$('ai_model').value){var o=document.createElement('option');o.value=o.textContent=c.ai_model;$('ai_model').appendChild(o);$('ai_model').value=c.ai_model;}
     loadSugg();
     // автоответ
@@ -256,7 +258,7 @@
     v.shifts=lines($('shifts').value).map(function(l){var p=l.split(';');return {name:(p[0]||'').trim(),start:(p[1]||'09:00').trim(),end:(p[2]||'17:00').trim()};}).filter(function(s){return s.name;});
     var badShift=v.shifts.filter(function(s){return !/^\d{1,2}[:.]\d{2}$/.test(s.start)||!/^\d{1,2}[:.]\d{2}$/.test(s.end);})[0];
     if(badShift){alert('Смены: время пишется ЧЧ:ММ через точку с запятой, например «Смена 1;09:00;17:00». Ошибка в строке «'+badShift.name+'».');return;}
-    v.ai_enabled=$('ai_enabled').checked; v.ai_api_key=$('ai_api_key').value.trim(); v.ai_model=$('ai_model').value; v.ai_hide_personal=$('ai_hide_personal').checked;
+    v.ai_enabled=$('ai_enabled').checked; v.ai_api_key=$('ai_api_key').value.trim(); v.ai_model=$('ai_model').value; v.ai_hide_personal=$('ai_hide_personal').checked; v.ai_final_threat=$('ai_final_threat').checked;
     v.sound=$('sound').checked; v.toast=$('toast').checked; v.autostart=$('autostart').checked;
     var np=$('admin_pin').value.trim(); if(!/^\d{4,8}$/.test(np)){alert('PIN — от 4 до 8 цифр');return;} v.admin_pin=np;
     fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(v)}).then(function(r){ if(r.status===403){alert('Сессия настроек истекла, введите PIN заново');location.reload();return;} if(!r.ok){alert('Настройки не сохранены: ошибка программы ('+r.status+'). Подробности — в журнале.');return;} pin=np; try{sessionStorage.setItem('rm_pin',pin);}catch(e){} r.json().then(function(j){ if(j&&typeof j.count_from==='string'){ $('count_from').value=j.count_from; cfg.count_from=j.count_from; } }).catch(function(){}); $('saved').hidden=false;setTimeout(function(){$('saved').hidden=true;},2500);}).catch(function(){alert('Программа не отвечает — настройки не сохранены');});
