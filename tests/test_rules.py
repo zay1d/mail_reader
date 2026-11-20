@@ -9,6 +9,7 @@ with open(os.path.join(helpers.ROOT, "config.json"), encoding="utf-8") as _f:
     CFG = json.load(_f)
 for _k, _v in config.DEFAULTS.items():
     CFG.setdefault(_k, _v)
+config._merge_defaults(CFG)          # как при запуске программы: новые стандартные слова дописываются к сохранённым
 DET = threats.Detector(CFG)
 
 
@@ -184,6 +185,27 @@ class FormContact(unittest.TestCase):
     def test_own_address_is_not_client(self):
         body = "Email: contact@tcmall.uz\nСообщение: тест"
         self.assertEqual(classify.form_contact(body, {"contact@tcmall.uz"}, "support@o-d.one")[0], "")
+
+
+
+class SlangPraise(unittest.TestCase):
+    """«Мероприятие было бомба» — похвала (ложная красная тревога 19.11). Настоящие угрозы рядом — тревога."""
+    def test_praise_is_calm(self):
+        for t in ("Мероприятие было бомба!", "мероприятие было бомба, спасибо организаторам",
+                  "Концерт был бомба", "Вчера всё было бомба, придём ещё", "Вчерашнее мероприятие было просто бомба"):
+            self.assertEqual(level(t), 0, t)
+
+    def test_update_adds_exception_to_saved_settings(self):
+        with open(os.path.join(helpers.ROOT, "config.json"), encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertNotIn("было бомба", saved["threat_exceptions"])     # в настройках ПК ресепшн этого слова нет
+        self.assertIn("было бомба", CFG["threat_exceptions"])          # программа допишет его при запуске
+
+    def test_threats_still_raise_alarm(self):
+        for t in ("В здании бомба.", "Мероприятие было бомба. А завтра в здании будет бомба.",
+                  "Завтра на мероприятии будет бомба", "В вашем центре была бомба, и будет снова",
+                  "Мероприятие — бомба заложена в зале", "Было бомбу заложить решено"):
+            self.assertEqual(level(t), 2, t)
 
 
 if __name__ == "__main__":
